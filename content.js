@@ -1,0 +1,116 @@
+// content.js
+(async function() {
+    function getDomain(url) {
+        try {
+            const hostname = new URL(url).hostname;
+            return hostname.replace(/^www\./, '');
+        } catch (e) {
+            return null;
+        }
+    }
+
+    const domain = getDomain(window.location.href);
+    if (!domain) return;
+
+    // Check if we are a target site
+    const data = await chrome.storage.local.get(['targetSites', 'activeSessions']);
+    const targetSites = data.targetSites || [];
+    
+    // Simple check: is domain in target sites?
+    // Note: This matches exact domain (e.g. reddit.com). If subsites are used, might need better matching.
+    if (!targetSites.includes(domain)) return;
+
+    let overlay = null;
+    let timerInterval = null;
+
+    function createOverlay() {
+        if (document.getElementById('website-time-blocking-overlay')) return;
+        
+        overlay = document.createElement('div');
+        overlay.id = 'website-time-blocking-overlay';
+        document.body.appendChild(overlay);
+    }
+
+    function updateOverlay(session) {
+        if (!overlay) createOverlay();
+        if (!overlay) return; // Should exist
+
+        if (!session) {
+            overlay.style.display = 'none';
+            return;
+        }
+
+        overlay.style.display = 'flex';
+        
+        if (session.type === 'duration') {
+            const timeLeft = session.endTime - Date.now();
+            if (timeLeft <= 0) {
+                 overlay.textContent = "Time's Up!";
+                 overlay.classList.add('warning');
+                 // Force reload to trigger background check immediately
+                 // Debounce this to avoid spamming reloads if background is slow
+                 if (!session.expiredActionTaken) {
+                     session.expiredActionTaken = true;
+                     setTimeout(() => window.location.reload(), 500);
+                 }
+            } else {
+                const minutes = Math.floor(timeLeft / 60000);
+                const seconds = Math.floor((timeLeft % 60000) / 1000);
+                overlay.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+                overlay.classList.remove('warning');
+            }
+        } else if (session.type === 'count') {
+            overlay.textContent = `${session.videosWatched || 0} / ${session.targetCount} Videos`;
+             if ((session.videosWatched || 0) >= session.targetCount) {
+                  overlay.classList.add('warning');
+             } else {
+                  overlay.classList.remove('warning');
+             }
+        } else if (session.type === 'unlimited') {
+             overlay.textContent = "Unlimited Session";
+        }
+    }
+
+    // Initial Check
+    if (data.activeSessions && data.activeSessions[domain]) {
+        updateOverlay(data.activeSessions[domain]);
+        
+        // Start lighter timer for duration updates
+        if (data.activeSessions[domain].type === 'duration') {
+             timerInterval = setInterval(() => {
+                 // Re-read storage? No, expensive. 
+                 // We can compute time locally based on static endTime from initial read?
+                 // But multiple tabs might be open. Best to use local calc.
+                 // However, "immediate kick" requires we know if *another* tab invalidates.
+                 // Ideally, we should listen to storage changes for "truth", and use interval for display.
+                 
+                 // Let's just update display based on initial read + elapsed time?
+                 // No, usage might be updated.
+                 // Actually, endTime is fixed for duration.
+                 updateOverlay(data.activeSessions[domain]);
+             }, 1000);
+        }
+    }
+
+    // Listen for changes
+    chrome.storage.onChanged.addListener((changes, namespace) => {
+        if (namespace === 'local' && changes.activeSessions) {
+            const newSessions = changes.activeSessions.newValue || {};
+            const session = newSessions[domain];
+            
+            // Clear interval if switching types or ending session
+            if (timerInterval) clearInterval(timerInterval);
+            
+            if (session) {
+                updateOverlay(session);
+                if (session.type === 'duration') {
+                    timerInterval = setInterval(() => updateOverlay(session), 1000);
+                }
+            } else {
+                // Session ended
+                if (overlay) overlay.style.display = 'none';
+            }
+        }
+    });
+
+})();

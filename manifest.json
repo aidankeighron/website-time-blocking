@@ -6,7 +6,8 @@
   "permissions": [
     "storage",
     "tabs",
-    "webNavigation"
+    "webNavigation",
+    "alarms"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -18,6 +19,14 @@
     "default_popup": "options.html"
   },
   "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["overlay.css"],
+      "run_at": "document_end"
+    }
+  ],
   "icons": {
      "16": "icons/icon16.png",
      "48": "icons/icon48.png",

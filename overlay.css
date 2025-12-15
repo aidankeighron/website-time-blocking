@@ -1,0 +1,25 @@
+#website-time-blocking-overlay {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    background-color: rgba(30, 30, 30, 0.9);
+    color: #bb86fc;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    z-index: 2147483647; /* Max z-index */
+    box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+    border: 1px solid #333;
+    pointer-events: none; /* Let clicks pass through */
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+#website-time-blocking-overlay.warning {
+    color: #cf6679;
+    border-color: #cf6679;
+}

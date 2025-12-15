@@ -139,6 +139,33 @@ async function endSessionAndStartCooldown(domain, type) {
 }
 
 
+// Handle Alarms for Duration Expiry
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+    if (alarm.name.startsWith('session_')) {
+        const domain = alarm.name.split('session_')[1];
+        // Session expired.
+        // Get active tabs for this domain and redirect them.
+        const tabs = await chrome.tabs.query({});
+        const data = await chrome.storage.local.get(['activeSessions']);
+        
+        // Verify session is still active and duration type
+        if (data.activeSessions && data.activeSessions[domain] && data.activeSessions[domain].type === 'duration') {
+             endSessionAndStartCooldown(domain, 'duration');
+             
+             // Redirect pages immediately
+             tabs.forEach(tab => {
+                 try {
+                     const url = new URL(tab.url);
+                     if (getDomain(tab.url) === domain) {
+                          const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(tab.url)}&msg=Time%20Up`);
+                          chrome.tabs.update(tab.id, { url: promptUrl });
+                     }
+                 } catch(e) {}
+             });
+        }
+    }
+});
+
 // Handle Messages from Prompt
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'startSession') {
@@ -164,6 +191,10 @@ async function startSession(url, type, value) {
     if (type === 'duration') {
         session.durationMinutes = value;
         session.endTime = Date.now() + (value * 60 * 1000);
+        
+        // Create Alarm
+        chrome.alarms.create(`session_${domain}`, { when: session.endTime });
+        
     } else if (type === 'count') {
         session.targetCount = value;
         session.videosWatched = 0; // Starts at 0, first video counts as 1
@@ -180,4 +211,22 @@ async function startSession(url, type, value) {
     sessions[domain] = session;
     await chrome.storage.local.set({ activeSessions: sessions });
     return true;
+}
+
+async function endSessionAndStartCooldown(domain, type) {
+    const data = await chrome.storage.local.get(['activeSessions', 'cooldowns', 'durationCooldown', 'countCooldown']);
+    const sessions = data.activeSessions || {};
+    const cooldowns = data.cooldowns || {};
+    
+    // Remove session
+    delete sessions[domain];
+    
+    // Clear alarm if exists
+    chrome.alarms.clear(`session_${domain}`);
+    
+    // Set Cooldown
+    const cooldownDuration = (type === 'duration' ? data.durationCooldown : data.countCooldown) || 30; // default 30 min
+    cooldowns[domain] = Date.now() + (cooldownDuration * 60 * 1000);
+    
+    await chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
 }
