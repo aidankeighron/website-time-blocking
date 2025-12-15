@@ -79,7 +79,25 @@ async function checkAccess(tabId, url, domain) {
     const session = sessions[domain];
     
     // 3. Validation Logic per type
-    if (session.type === 'duration') {
+    if (session.type === 'unlimited') {
+        // Check for 20 minute inactivity
+        // 20 minutes = 1200000 ms
+        if (now - (session.lastActive || session.startTime) > 20 * 60 * 1000) {
+             // Session Expired
+             delete sessions[domain];
+             await chrome.storage.local.set({ activeSessions: sessions });
+             
+             const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
+             chrome.tabs.update(tabId, { url: promptUrl });
+             return;
+        }
+        
+        // Update Activity
+        session.lastActive = now;
+        sessions[domain] = session;
+        chrome.storage.local.set({ activeSessions: sessions });
+
+    } else if (session.type === 'duration') {
         const endTime = session.endTime;
         if (now > endTime) {
             // Expired -> Start Cooldown -> Redirect
@@ -95,11 +113,11 @@ async function checkAccess(tabId, url, domain) {
             // New video detected
             session.videosWatched = (session.videosWatched || 0) + 1;
             session.lastVideoId = videoId;
+            // Update activity just in case we want to track it
+            session.lastActive = now;
             
             if (session.videosWatched > session.targetCount) {
                 // Limit exceeded -> Start Cooldown -> Redirect
-                // Note: The user said "if you try to open a video past the count limit". 
-                // So if limit is 3, watching 3 is OK. Opening 4th triggers blocking.
                 endSessionAndStartCooldown(domain, 'count');
                 const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Limit%20Reached`);
                 chrome.tabs.update(tabId, { url: promptUrl });
@@ -108,6 +126,11 @@ async function checkAccess(tabId, url, domain) {
                 sessions[domain] = session;
                 chrome.storage.local.set({ activeSessions: sessions });
             }
+        } else {
+             // Just visiting same video or browsing
+             session.lastActive = now;
+             sessions[domain] = session;
+             chrome.storage.local.set({ activeSessions: sessions });
         }
     }
     // 'unlimited' needs no check, just let it pass.
@@ -166,15 +189,30 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     }
 });
 
-// Handle Messages from Prompt
+// Handle Messages from Prompt or Content Script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'startSession') {
         startSession(message.url, message.type, message.value).then((success) => {
             sendResponse({ success: success });
         }).catch(err => sendResponse({ success: false, error: err.message }));
-        return true; // Keep channel open for async response
+        return true; 
+    } else if (message.action === 'keepAlive') {
+        keepAlive(message.url);
     }
 });
+
+async function keepAlive(url) {
+    const domain = getDomain(url);
+    if (!domain) return;
+    
+    const data = await chrome.storage.local.get(['activeSessions']);
+    const sessions = data.activeSessions || {};
+    
+    if (sessions[domain] && sessions[domain].type === 'unlimited') {
+        sessions[domain].lastActive = Date.now();
+        await chrome.storage.local.set({ activeSessions: sessions });
+    }
+}
 
 async function startSession(url, type, value) {
     const domain = getDomain(url);
@@ -185,7 +223,8 @@ async function startSession(url, type, value) {
     
     const session = {
         type: type,
-        startTime: Date.now()
+        startTime: Date.now(),
+        lastActive: Date.now() // For unlimited timeout
     };
     
     if (type === 'duration') {
@@ -197,10 +236,7 @@ async function startSession(url, type, value) {
         
     } else if (type === 'count') {
         session.targetCount = value;
-        session.videosWatched = 0; // Starts at 0, first video counts as 1
-        // If we are already on a video URL, count it?
-        // "The extension will keep track of every new video you open"
-        // If we start the session on a video page, that counts as the first video.
+        session.videosWatched = 0; 
         const vid = getYouTubeVideoId(url);
         if (vid) {
              session.videosWatched = 1;
@@ -212,6 +248,8 @@ async function startSession(url, type, value) {
     await chrome.storage.local.set({ activeSessions: sessions });
     return true;
 }
+
+// ... existing utility functions ...
 
 async function endSessionAndStartCooldown(domain, type) {
     const data = await chrome.storage.local.get(['activeSessions', 'cooldowns', 'durationCooldown', 'countCooldown']);

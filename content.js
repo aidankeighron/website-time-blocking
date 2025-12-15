@@ -68,6 +68,11 @@
              }
         } else if (session.type === 'unlimited') {
              overlay.textContent = "Unlimited Session";
+             
+             // Send heartbeat
+             if (!session.lastHeartbeat || Date.now() - session.lastHeartbeat > 60000) {
+                 chrome.runtime.sendMessage({ action: 'keepAlive', url: window.location.href });
+             }
         }
     }
 
@@ -75,21 +80,10 @@
     if (data.activeSessions && data.activeSessions[domain]) {
         updateOverlay(data.activeSessions[domain]);
         
-        // Start lighter timer for duration updates
-        if (data.activeSessions[domain].type === 'duration') {
-             timerInterval = setInterval(() => {
-                 // Re-read storage? No, expensive. 
-                 // We can compute time locally based on static endTime from initial read?
-                 // But multiple tabs might be open. Best to use local calc.
-                 // However, "immediate kick" requires we know if *another* tab invalidates.
-                 // Ideally, we should listen to storage changes for "truth", and use interval for display.
-                 
-                 // Let's just update display based on initial read + elapsed time?
-                 // No, usage might be updated.
-                 // Actually, endTime is fixed for duration.
-                 updateOverlay(data.activeSessions[domain]);
-             }, 1000);
-        }
+        // Start lighter timer for duration updates AND heartbeats
+        timerInterval = setInterval(() => {
+             updateOverlay(data.activeSessions[domain]);
+        }, 1000); // 1 sec interval is fine for both
     }
 
     // Listen for changes
@@ -103,9 +97,7 @@
             
             if (session) {
                 updateOverlay(session);
-                if (session.type === 'duration') {
-                    timerInterval = setInterval(() => updateOverlay(session), 1000);
-                }
+                timerInterval = setInterval(() => updateOverlay(session), 1000);
             } else {
                 // Session ended
                 if (overlay) overlay.style.display = 'none';
