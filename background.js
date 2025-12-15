@@ -49,15 +49,71 @@ async function checkAccess(tabId, url, domain) {
     
     const now = Date.now();
     
-    // 1. Check Cooldown
+    // 1. Check Active Session (Priority over Cooldown for Unlimited)
+    if (sessions[domain]) {
+        const session = sessions[domain];
+
+        // Validation Logic per type
+        if (session.type === 'unlimited') {
+            // Check for 20 minute inactivity
+            if (now - (session.lastActive || session.startTime) > 20 * 60 * 1000) {
+                 // Session Expired
+                 delete sessions[domain];
+                 await chrome.storage.local.set({ activeSessions: sessions });
+                 
+                 const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
+                 chrome.tabs.update(tabId, { url: promptUrl });
+                 return;
+            }
+            
+            // Update Activity
+            session.lastActive = now;
+            sessions[domain] = session;
+            chrome.storage.local.set({ activeSessions: sessions });
+            return; // Allow access
+
+        } else if (session.type === 'duration') {
+            const endTime = session.endTime;
+            if (now > endTime) {
+                // Expired -> Start Cooldown -> Redirect
+                endSessionAndStartCooldown(domain, 'duration');
+                const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Time%20Up`);
+                chrome.tabs.update(tabId, { url: promptUrl });
+                return;
+            }
+            return; // Allow access
+
+        } else if (session.type === 'count') {
+            // YouTube specific: Check video ID
+            const videoId = getYouTubeVideoId(url);
+            if (videoId && videoId !== session.lastVideoId) {
+                // New video detected
+                session.videosWatched = (session.videosWatched || 0) + 1;
+                session.lastVideoId = videoId;
+                session.lastActive = now;
+                
+                if (session.videosWatched > session.targetCount) {
+                    endSessionAndStartCooldown(domain, 'count');
+                    const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Limit%20Reached`);
+                    chrome.tabs.update(tabId, { url: promptUrl });
+                    return;
+                } else {
+                    sessions[domain] = session;
+                    chrome.storage.local.set({ activeSessions: sessions });
+                }
+            } else {
+                 session.lastActive = now;
+                 sessions[domain] = session;
+                 chrome.storage.local.set({ activeSessions: sessions });
+            }
+            return; // Allow access
+        }
+    }
+
+    // 2. Check Cooldown (If no active session)
     if (cooldowns[domain] && cooldowns[domain] > now) {
-        // Cooldown active. Redirect to prompt with cooldown message.
-        // Or just a simple "Cooldown Active" page. 
-        // We'll use prompt.html?cooldown=true
         const minutesLeft = Math.ceil((cooldowns[domain] - now) / 60000);
         const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&cooldown=${minutesLeft}`);
-        // updating to the same URL repeatedly causes flickering or loops if we are not careful
-        // The check at the top "if (tab.url.startsWith...)" prevents loop.
         chrome.tabs.update(tabId, { url: promptUrl });
         return;
     }
@@ -68,72 +124,9 @@ async function checkAccess(tabId, url, domain) {
         chrome.storage.local.set({ cooldowns });
     }
 
-    // 2. Check Active Session
-    if (!sessions[domain]) {
-        // No session -> Redirect to prompt
-        const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}`);
-        chrome.tabs.update(tabId, { url: promptUrl });
-        return;
-    }
-    
-    const session = sessions[domain];
-    
-    // 3. Validation Logic per type
-    if (session.type === 'unlimited') {
-        // Check for 20 minute inactivity
-        // 20 minutes = 1200000 ms
-        if (now - (session.lastActive || session.startTime) > 20 * 60 * 1000) {
-             // Session Expired
-             delete sessions[domain];
-             await chrome.storage.local.set({ activeSessions: sessions });
-             
-             const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
-             chrome.tabs.update(tabId, { url: promptUrl });
-             return;
-        }
-        
-        // Update Activity
-        session.lastActive = now;
-        sessions[domain] = session;
-        chrome.storage.local.set({ activeSessions: sessions });
-
-    } else if (session.type === 'duration') {
-        const endTime = session.endTime;
-        if (now > endTime) {
-            // Expired -> Start Cooldown -> Redirect
-            endSessionAndStartCooldown(domain, 'duration');
-            // We need to reload or update to prompt
-             const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Time%20Up`);
-             chrome.tabs.update(tabId, { url: promptUrl });
-        }
-    } else if (session.type === 'count') {
-        // YouTube specific: Check video ID
-        const videoId = getYouTubeVideoId(url);
-        if (videoId && videoId !== session.lastVideoId) {
-            // New video detected
-            session.videosWatched = (session.videosWatched || 0) + 1;
-            session.lastVideoId = videoId;
-            // Update activity just in case we want to track it
-            session.lastActive = now;
-            
-            if (session.videosWatched > session.targetCount) {
-                // Limit exceeded -> Start Cooldown -> Redirect
-                endSessionAndStartCooldown(domain, 'count');
-                const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Limit%20Reached`);
-                chrome.tabs.update(tabId, { url: promptUrl });
-            } else {
-                // Update session state
-                sessions[domain] = session;
-                chrome.storage.local.set({ activeSessions: sessions });
-            }
-        } else {
-             // Just visiting same video or browsing
-             session.lastActive = now;
-             sessions[domain] = session;
-             chrome.storage.local.set({ activeSessions: sessions });
-        }
-    }
-    // 'unlimited' needs no check, just let it pass.
+    // 3. No Session & No Cooldown -> Redirect to Prompt to Start
+    const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}`);
+    chrome.tabs.update(tabId, { url: promptUrl });
 }
 
 function getYouTubeVideoId(url) {
