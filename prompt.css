@@ -1,0 +1,135 @@
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #121212;
+    color: #e0e0e0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+}
+
+.container {
+    background-color: #1e1e1e;
+    padding: 40px;
+    border-radius: 20px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+    text-align: center;
+    width: 350px;
+}
+
+h1 {
+    color: #bb86fc;
+    margin-bottom: 10px;
+}
+
+#target-site-display {
+    color: #aaa;
+    margin-bottom: 30px;
+    font-style: italic;
+}
+
+.type-selector {
+    display: flex;
+    justify-content: center;
+    background-color: #2c2c2c;
+    border-radius: 12px;
+    padding: 5px;
+    margin-bottom: 25px;
+}
+
+.type-btn {
+    background: transparent;
+    border: none;
+    color: #aaa;
+    padding: 10px 15px;
+    cursor: pointer;
+    flex-grow: 1;
+    border-radius: 8px;
+    font-weight: 500;
+    transition: all 0.3s;
+}
+
+.type-btn.active {
+    background-color: #bb86fc;
+    color: #000;
+}
+
+/* Round the corners of the first and last buttons effectively */
+.type-btn:first-child { border-top-left-radius: 8px; border-bottom-left-radius: 8px; }
+.type-btn:last-child { border-top-right-radius: 8px; border-bottom-right-radius: 8px; }
+
+
+.view {
+    display: none;
+    margin-bottom: 25px;
+    min-height: 80px; /* Prevent layout jump */
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+
+.view.active-view {
+    display: flex; /* Override display:none */
+}
+
+/* Important: .view is defined as display:flex above which overrides display:none in the cascading order if not careful.
+   Better specificty: */
+.view { display: none; } 
+.view.active-view { display: flex; }
+
+
+input[type="number"] {
+    background-color: #2c2c2c;
+    border: 2px solid #333;
+    color: #fff;
+    padding: 12px;
+    border-radius: 10px;
+    width: 100px;
+    text-align: center;
+    font-size: 1.2rem;
+    margin-top: 10px;
+    outline: none;
+}
+
+input[type="number"]:focus {
+    border-color: #bb86fc;
+}
+
+#confirm-btn {
+    background-color: #03dac6;
+    color: #000;
+    border: none;
+    padding: 12px 30px;
+    border-radius: 50px; /* Pill shape */
+    font-size: 1rem;
+    font-weight: bold;
+    cursor: pointer;
+    transition: transform 0.2s, background-color 0.2s;
+    width: 100%;
+}
+
+#confirm-btn:hover {
+    background-color: #018786;
+    transform: translateY(-2px);
+}
+
+.warning {
+    color: #cf6679;
+    font-size: 0.9rem;
+    margin-top: 10px;
+}
+
+#error-msg {
+    color: #cf6679;
+    margin-top: 15px;
+    min-height: 20px;
+    font-size: 0.9rem;
+}
+
+.small-text {
+    font-size: 0.8rem;
+    color: #777;
+    margin-top: 5px;
+}
