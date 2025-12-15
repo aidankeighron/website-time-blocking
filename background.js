@@ -86,10 +86,17 @@ async function checkAccess(tabId, url, domain) {
         } else if (session.type === 'count') {
             // YouTube specific: Check video ID
             const videoId = getYouTubeVideoId(url);
-            if (videoId && videoId !== session.lastVideoId) {
-                // New video detected
+            
+            // Initialize array if missing (migration)
+            if (!session.watchedVideoIds) session.watchedVideoIds = [];
+            if (session.lastVideoId && !session.watchedVideoIds.includes(session.lastVideoId)) {
+                 session.watchedVideoIds.push(session.lastVideoId); // migrates old single ID
+            }
+
+            if (videoId && !session.watchedVideoIds.includes(videoId)) {
+                // New unique video detected
                 session.videosWatched = (session.videosWatched || 0) + 1;
-                session.lastVideoId = videoId;
+                session.watchedVideoIds.push(videoId);
                 session.lastActive = now;
                 
                 if (session.videosWatched > session.targetCount) {
@@ -106,6 +113,7 @@ async function checkAccess(tabId, url, domain) {
                  sessions[domain] = session;
                  chrome.storage.local.set({ activeSessions: sessions });
             }
+
             return; // Allow access
         }
     }
@@ -230,10 +238,11 @@ async function startSession(url, type, value) {
     } else if (type === 'count') {
         session.targetCount = value;
         session.videosWatched = 0; 
+        session.watchedVideoIds = [];
         const vid = getYouTubeVideoId(url);
         if (vid) {
              session.videosWatched = 1;
-             session.lastVideoId = vid;
+             session.watchedVideoIds.push(vid);
         }
     }
     
