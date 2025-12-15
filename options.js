@@ -20,11 +20,13 @@ function restoreOptions() {
         targetSites: ['instagram.com', 'reddit.com', 'youtube.com'],
         unlimitedUses: 5,
         durationCooldown: 30,
-        countCooldown: 30
+        countCooldown: 30,
+        resetTime: '00:00'
     }, (items) => {
         document.getElementById('unlimited-daily').value = items.unlimitedUses;
         document.getElementById('duration-cooldown').value = items.durationCooldown;
         document.getElementById('count-cooldown').value = items.countCooldown;
+        document.getElementById('reset-time').value = items.resetTime;
         
         const list = document.getElementById('site-list');
         list.innerHTML = '';
@@ -76,6 +78,7 @@ function saveOptions() {
     const unlimitedUses = parseInt(document.getElementById('unlimited-daily').value, 10);
     const durationCooldown = parseInt(document.getElementById('duration-cooldown').value, 10);
     const countCooldown = parseInt(document.getElementById('count-cooldown').value, 10);
+    const resetTime = document.getElementById('reset-time').value;
     
     const targetSites = Array.from(document.querySelectorAll('#site-list li')).map(li => li.childNodes[0].textContent);
 
@@ -83,7 +86,8 @@ function saveOptions() {
         targetSites: targetSites,
         unlimitedUses: unlimitedUses,
         durationCooldown: durationCooldown,
-        countCooldown: countCooldown
+        countCooldown: countCooldown,
+        resetTime: resetTime
     }, () => {
         showStatus('Settings saved.');
     });

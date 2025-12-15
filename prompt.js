@@ -11,9 +11,12 @@ document.getElementById('target-site-display').textContent = `Accessing: ${hostn
 init();
 
 async function init() {
-    const data = await chrome.storage.local.get(['cooldowns', 'unlimitedUses', 'dailyUnlimitedUsage']);
+    const data = await chrome.storage.local.get(['cooldowns', 'unlimitedUses', 'dailyUnlimitedUsage', 'resetTime']);
     const now = Date.now();
     const domain = hostname.replace(/^www\./, '');
+    
+    // Calculate Cycle Start
+    const currentCycleStart = getCycleStart(now, data.resetTime || "00:00");
     
     // Check Cooldown in Storage (Priority UI check)
     if (data.cooldowns && data.cooldowns[domain] && data.cooldowns[domain] > now) {
@@ -38,9 +41,16 @@ function showCooldownUI(endTime, data) {
     
     // Check Unlimited availability
     const dailyLimit = data.unlimitedUses || 5;
-    const today = new Date().toLocaleDateString();
-    const usageData = data.dailyUnlimitedUsage || { date: today, count: 0 };
-    if (usageData.date !== today) { usageData.count = 0; } // reset if needed
+    const currentCycleStart = getCycleStart(Date.now(), data.resetTime || "00:00");
+    
+    const usageData = data.dailyUnlimitedUsage || { cycleStart: currentCycleStart, count: 0 };
+    
+    // Reset if new cycle (lazy reset)
+    if (usageData.cycleStart !== currentCycleStart) {
+        usageData.count = 0;
+        // We generally update storage on write, but for display we just pretend it's 0.
+        // It will be lazily updated when they click bypass or we explicitly save.
+    } 
     
     const remainingUnlimited = dailyLimit - usageData.count;
     const canBypass = remainingUnlimited > 0;
@@ -72,7 +82,7 @@ function showCooldownUI(endTime, data) {
         document.getElementById('bypass-btn').addEventListener('click', () => {
              // Increment usage
              usageData.count = usageData.count + 1;
-             usageData.date = today;
+             usageData.cycleStart = currentCycleStart; // Update cycle
              chrome.storage.local.set({ dailyUnlimitedUsage: usageData }, () => {
                   startSession('unlimited', null);
              });
@@ -117,14 +127,16 @@ function setupTypeSwitching() {
 }
 
 function updateUnlimitedStatus() {
-    const today = new Date().toLocaleDateString();
-    chrome.storage.local.get(['unlimitedUses', 'dailyUnlimitedUsage'], (data) => {
+    chrome.storage.local.get(['unlimitedUses', 'dailyUnlimitedUsage', 'resetTime'], (data) => {
         const dailyLimit = data.unlimitedUses || 5;
-        const usageData = data.dailyUnlimitedUsage || { date: today, count: 0 };
+        const currentCycleStart = getCycleStart(Date.now(), data.resetTime || "00:00");
+        const usageData = data.dailyUnlimitedUsage || { cycleStart: currentCycleStart, count: 0 };
         
-        if (usageData.date !== today) {
-            usageData.date = today;
+        if (usageData.cycleStart !== currentCycleStart) {
+            usageData.cycleStart = currentCycleStart;
             usageData.count = 0;
+            // Lazily update view, we don't necessarily need to write to storage just for viewing
+            // but for consistency let's update if we want persistence of the reset
             chrome.storage.local.set({ dailyUnlimitedUsage: usageData });
         }
         
@@ -143,20 +155,24 @@ function handleConfirm() {
     const selectedType = window.selectedType || 'unlimited';
 
     if (selectedType === 'unlimited') {
-        const today = new Date().toLocaleDateString();
-         chrome.storage.local.get(['unlimitedUses', 'dailyUnlimitedUsage'], (data) => {
+         chrome.storage.local.get(['unlimitedUses', 'dailyUnlimitedUsage', 'resetTime'], (data) => {
             const dailyLimit = data.unlimitedUses || 5;
-            const usageData = data.dailyUnlimitedUsage || { date: today, count: 0 };
+            const currentCycleStart = getCycleStart(Date.now(), data.resetTime || "00:00");
+            const usageData = data.dailyUnlimitedUsage || { cycleStart: currentCycleStart, count: 0 };
             
-            if (usageData.date !== today) { usageData.count = 0; }
+            if (usageData.cycleStart !== currentCycleStart) { 
+                usageData.count = 0; 
+                usageData.cycleStart = currentCycleStart;
+            }
             
             if (usageData.count >= dailyLimit) {
-                errorDiv.textContent = "No unlimited uses left today.";
+                errorDiv.textContent = "No unlimited uses left for this cycle.";
+                 // check if cycle just reset? No, relying on above check.
                 return;
             }
             
             usageData.count = usageData.count + 1;
-            usageData.date = today;
+            usageData.cycleStart = currentCycleStart;
             
             chrome.storage.local.set({ dailyUnlimitedUsage: usageData }, () => {
                  startSession('unlimited', null);
@@ -194,4 +210,22 @@ function startSession(type, value) {
              document.getElementById('error-msg').textContent = response.error || "Failed to start session.";
         }
     });
+}
+
+function getCycleStart(nowTimestamp, resetTimeStr) {
+    const now = new Date(nowTimestamp);
+    const [resetHour, resetMinute] = resetTimeStr.split(':').map(Number);
+    
+    const cycleStartToday = new Date(now);
+    cycleStartToday.setHours(resetHour, resetMinute, 0, 0);
+    
+    if (now < cycleStartToday) {
+        // We are before the reset time for today, so the cycle started yesterday
+        const cycleStartYesterday = new Date(cycleStartToday);
+        cycleStartYesterday.setDate(cycleStartYesterday.getDate() - 1);
+        return cycleStartYesterday.getTime();
+    } else {
+        // We are after/at the reset time, so cycle started today
+        return cycleStartToday.getTime();
+    }
 }
