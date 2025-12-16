@@ -66,10 +66,12 @@ async function checkAccess(tabId, url, domain) {
                  return;
             }
             
-            // Update Activity
-            session.lastActive = now;
-            sessions[domain] = session;
-            chrome.storage.local.set({ activeSessions: sessions });
+            // Update Activity (Throttled)
+            if (now - session.lastActive > 5000) { // 5s throttle
+                session.lastActive = now;
+                sessions[domain] = session;
+                chrome.storage.local.set({ activeSessions: sessions });
+            }
             return; // Allow access
 
         } else if (session.type === 'duration') {
@@ -109,9 +111,11 @@ async function checkAccess(tabId, url, domain) {
                     chrome.storage.local.set({ activeSessions: sessions });
                 }
             } else {
-                 session.lastActive = now;
-                 sessions[domain] = session;
-                 chrome.storage.local.set({ activeSessions: sessions });
+                 if (now - session.lastActive > 5000) { // 5s throttle
+                     session.lastActive = now;
+                     sessions[domain] = session;
+                     chrome.storage.local.set({ activeSessions: sessions });
+                 }
             }
 
             return; // Allow access

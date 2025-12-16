@@ -76,14 +76,18 @@
         }
     }
 
+    // State to hold current session data
+    let currentSession = null;
+
     // Initial Check
     if (data.activeSessions && data.activeSessions[domain]) {
-        updateOverlay(data.activeSessions[domain]);
+        currentSession = data.activeSessions[domain];
+        updateOverlay(currentSession);
         
         // Start lighter timer for duration updates AND heartbeats
         timerInterval = setInterval(() => {
-             updateOverlay(data.activeSessions[domain]);
-        }, 1000); // 1 sec interval is fine for both
+             updateOverlay(currentSession);
+        }, 5000); // 5 sec interval as requested
     }
 
     // Listen for changes
@@ -92,15 +96,27 @@
             const newSessions = changes.activeSessions.newValue || {};
             const session = newSessions[domain];
             
-            // Clear interval if switching types or ending session
-            if (timerInterval) clearInterval(timerInterval);
-            
-            if (session) {
-                updateOverlay(session);
-                timerInterval = setInterval(() => updateOverlay(session), 1000);
-            } else {
+            // Just update reference, don't churn timers
+            currentSession = session;
+
+            if (!session) {
                 // Session ended
                 if (overlay) overlay.style.display = 'none';
+                if (timerInterval) {
+                    clearInterval(timerInterval);
+                    timerInterval = null;
+                }
+            } else {
+                 // If timer wasn't running (e.g. startup), start it
+                 if (!timerInterval) {
+                     updateOverlay(session);
+                     timerInterval = setInterval(() => updateOverlay(currentSession), 5000);
+                 } else {
+                     // Optionally update immediately on change for responsiveness, 
+                     // but to cure lag we might skip this or depend on the next tick.
+                     // A middle ground is updating the overlay text but NOT restarting the timer.
+                     updateOverlay(session);
+                 }
             }
         }
     });
