@@ -23,6 +23,8 @@
     let overlay = null;
     let timerInterval = null;
 
+    let lastHeartbeatSent = 0;
+
     function createOverlay() {
         if (document.getElementById('website-time-blocking-overlay')) return;
         
@@ -70,7 +72,9 @@
              overlay.textContent = "Unlimited Session";
              
              // Send heartbeat
-             if (!session.lastHeartbeat || Date.now() - session.lastHeartbeat > 60000) {
+             // Use local variable to throttle
+             if (Date.now() - lastHeartbeatSent > 60000) {
+                 lastHeartbeatSent = Date.now();
                  chrome.runtime.sendMessage({ action: 'keepAlive', url: window.location.href });
              }
         }
@@ -111,12 +115,10 @@
                  if (!timerInterval) {
                      updateOverlay(session);
                      timerInterval = setInterval(() => updateOverlay(currentSession), 5000);
-                 } else {
-                     // Optionally update immediately on change for responsiveness, 
-                     // but to cure lag we might skip this or depend on the next tick.
-                     // A middle ground is updating the overlay text but NOT restarting the timer.
-                     updateOverlay(session);
-                 }
+                 } 
+                 // REMOVED: Immediate updateOverlay(session) here, because if that triggered a write (heartbeat)
+                 // it would cause an infinite loop with storage.onChanged.
+                 // We rely on the interval to update the display.
             }
         }
     });
