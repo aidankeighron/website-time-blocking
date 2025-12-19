@@ -13,7 +13,7 @@ init();
 async function init() {
     const data = await chrome.storage.local.get(['cooldowns', 'unlimitedUses', 'dailyUnlimitedUsage', 'resetTime']);
     const now = Date.now();
-    const domain = hostname.replace(/^www\./, '');
+    const domain = hostname.replace(/^(www\.|m\.|mobile\.)/, '');
     
     // Calculate Cycle Start
     const currentCycleStart = getCycleStart(now, data.resetTime || "00:00");

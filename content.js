@@ -3,7 +3,7 @@
     function getDomain(url) {
         try {
             const hostname = new URL(url).hostname;
-            return hostname.replace(/^www\./, '');
+            return hostname.replace(/^(www\.|m\.|mobile\.)/, '');
         } catch (e) {
             return null;
         }
@@ -17,7 +17,6 @@
     const targetSites = data.targetSites || [];
     
     // Simple check: is domain in target sites?
-    // Note: This matches exact domain (e.g. reddit.com). If subsites are used, might need better matching.
     if (!targetSites.includes(domain)) return;
 
     let overlay = null;

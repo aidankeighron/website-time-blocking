@@ -10,7 +10,7 @@ const DEFAULT_TARGETS = ['instagram.com', 'reddit.com', 'youtube.com'];
 function getDomain(url) {
     try {
         const hostname = new URL(url).hostname;
-        return hostname.replace(/^www\./, '');
+        return hostname.replace(/^(www\.|m\.|mobile\.)/, '');
     } catch (e) {
         return null;
     }
