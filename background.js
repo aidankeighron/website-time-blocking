@@ -100,6 +100,17 @@ async function checkAccess(tabId, url, domain) {
                  return;
             }
 
+            // Check for 2 hours inactivity (similar to unlimited)
+            if (now - (session.lastActive || session.startTime) > 2 * 60 * 60 * 1000) {
+                 // Session Expired due to inactivity
+                 delete sessions[domain];
+                 await chrome.storage.local.set({ activeSessions: sessions });
+                 
+                 const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
+                 chrome.tabs.update(tabId, { url: promptUrl });
+                 return;
+            }
+
             // YouTube specific: Check video ID
             const videoId = getYouTubeVideoId(url);
             
@@ -219,9 +230,15 @@ async function endSessionAndStartCooldown(domain, type) {
     // The previous code block fetching 'data' has 'activeSessions' BEFORE deletion.
     const currentSession = data.activeSessions ? data.activeSessions[domain] : null;
     
-    if (currentSession && currentSession.cooldownEndTime && currentSession.cooldownEndTime > Date.now()) {
-        cooldownEnd = currentSession.cooldownEndTime;
+    // Check if we have a pre-calculated cooldown end time (e.g. from duration session start)
+    if (currentSession && currentSession.cooldownEndTime) {
+         cooldownEnd = currentSession.cooldownEndTime;
+         // If for some reason the pre-calculated time is in the past (unlikely if we just expired), 
+         // we might want to enforce a minimum just in case, but user requested specific behavior:
+         // "if you go back to a website after the sesssion and cooldown time have passed you can start a new session"
+         // So we TRUST the cooldownEndTime.
     } else {
+         // Fallback for sessions that didn't have it saved (legacy or count mode immediate trigger)
          const cooldownDuration = (type === 'duration' ? data.durationCooldown : data.countCooldown) || 30; // default 30 min
          cooldownEnd = Date.now() + (cooldownDuration * 60 * 1000);
     }
@@ -291,6 +308,9 @@ async function startSession(url, type, value) {
     const data = await chrome.storage.local.get(['activeSessions']);
     const sessions = data.activeSessions || {};
     
+    const cooldownData = await chrome.storage.local.get(['durationCooldown']);
+    const durationCooldown = cooldownData.durationCooldown || 30;
+
     const session = {
         type: type,
         startTime: Date.now(),
@@ -300,6 +320,8 @@ async function startSession(url, type, value) {
     if (type === 'duration') {
         session.durationMinutes = value;
         session.endTime = Date.now() + (value * 60 * 1000);
+        // Calculate and save cooldown end time based on scheduled end time
+        session.cooldownEndTime = session.endTime + (durationCooldown * 60 * 1000);
         
         // Create Alarm
         chrome.alarms.create(`session_${domain}`, { when: session.endTime });
@@ -322,37 +344,4 @@ async function startSession(url, type, value) {
 
 // ... existing utility functions ...
 
-async function endSessionAndStartCooldown(domain, type) {
-    const data = await chrome.storage.local.get(['activeSessions', 'cooldowns', 'durationCooldown', 'countCooldown']);
-    const sessions = data.activeSessions || {};
-    const cooldowns = data.cooldowns || {};
-    
-    // Remove session
-    delete sessions[domain];
-    
-    // Clear alarm if exists
-    chrome.alarms.clear(`session_${domain}`);
-    
-    // Set Cooldown
-    // Set Cooldown
-    // Duplicate logic for bottom function (cleanup) if needed, 
-    // but the bottom function 'endSessionAndStartCooldown' at 263 seems to be a duplicate declaration? 
-    // Yes, 'endSessionAndStartCooldown' is defined TWICE in this file. (Line 157 and 263).
-    // The previous tool call modified the FIRST one. I should probably modify this one too or delete it if it's unused?
-    // JavaScript allows function redeclarations (var style) or overwrites?
-    // Let's modify this one too to be safe/consistent.
-    
-    const currentSession = data.activeSessions ? data.activeSessions[domain] : null;
-    let cooldownEnd;
 
-    if (currentSession && currentSession.cooldownEndTime && currentSession.cooldownEndTime > Date.now()) {
-        cooldownEnd = currentSession.cooldownEndTime;
-    } else {
-        const cooldownDuration = (type === 'duration' ? data.durationCooldown : data.countCooldown) || 30; 
-        cooldownEnd = Date.now() + (cooldownDuration * 60 * 1000);
-    }
-    
-    cooldowns[domain] = cooldownEnd;
-    
-    await chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
-}
