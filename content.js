@@ -1,5 +1,7 @@
 // content.js
 (async function() {
+    const api = typeof browser !== 'undefined' ? browser : chrome;
+
     function getDomain(url) {
         try {
             const hostname = new URL(url).hostname;
@@ -13,7 +15,7 @@
     if (!domain) return;
 
     // Check if we are a target site
-    const data = await chrome.storage.local.get(['targetSites', 'activeSessions']);
+    const data = await api.storage.local.get(['targetSites', 'activeSessions']);
     const targetSites = data.targetSites || [];
     
     // Simple check: is domain in target sites?
@@ -142,7 +144,7 @@
              
              if (Date.now() - lastHeartbeatSent > 60000) {
                  lastHeartbeatSent = Date.now();
-                 chrome.runtime.sendMessage({ action: 'keepAlive', url: window.location.href });
+                 api.runtime.sendMessage({ action: 'keepAlive', url: window.location.href });
              }
         }
     }
@@ -161,7 +163,7 @@
     }
 
     // Listen for changes
-    chrome.storage.onChanged.addListener((changes, namespace) => {
+    api.storage.onChanged.addListener((changes, namespace) => {
         if (namespace === 'local' && changes.activeSessions) {
             const newSessions = changes.activeSessions.newValue || {};
             const session = newSessions[domain];

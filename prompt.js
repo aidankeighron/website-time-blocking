@@ -1,4 +1,6 @@
 // Parse query parameters
+const api = typeof browser !== 'undefined' ? browser : chrome;
+
 const params = new URLSearchParams(window.location.search);
 const intendedUrl = params.get('url');
 const cooldownVal = params.get('cooldown');
@@ -11,7 +13,7 @@ document.getElementById('target-site-display').textContent = `Accessing: ${hostn
 init();
 
 async function init() {
-    const data = await chrome.storage.local.get(['cooldowns', 'unlimitedUses', 'dailyUnlimitedUsage', 'resetTime']);
+    const data = await api.storage.local.get(['cooldowns', 'unlimitedUses', 'dailyUnlimitedUsage', 'resetTime']);
     const now = Date.now();
     const domain = hostname.replace(/^(www\.|m\.|mobile\.)/, '');
     
@@ -83,7 +85,7 @@ function showCooldownUI(endTime, data) {
              // Increment usage
              usageData.count = usageData.count + 1;
              usageData.cycleStart = currentCycleStart; // Update cycle
-             chrome.storage.local.set({ dailyUnlimitedUsage: usageData }, () => {
+             api.storage.local.set({ dailyUnlimitedUsage: usageData }, () => {
                   startSession('unlimited', null);
              });
         });
@@ -127,7 +129,7 @@ function setupTypeSwitching() {
 }
 
 function updateUnlimitedStatus() {
-    chrome.storage.local.get(['unlimitedUses', 'dailyUnlimitedUsage', 'resetTime'], (data) => {
+    api.storage.local.get(['unlimitedUses', 'dailyUnlimitedUsage', 'resetTime'], (data) => {
         const dailyLimit = data.unlimitedUses || 5;
         const currentCycleStart = getCycleStart(Date.now(), data.resetTime || "00:00");
         const usageData = data.dailyUnlimitedUsage || { cycleStart: currentCycleStart, count: 0 };
@@ -137,7 +139,7 @@ function updateUnlimitedStatus() {
             usageData.count = 0;
             // Lazily update view, we don't necessarily need to write to storage just for viewing
             // but for consistency let's update if we want persistence of the reset
-            chrome.storage.local.set({ dailyUnlimitedUsage: usageData });
+            api.storage.local.set({ dailyUnlimitedUsage: usageData });
         }
         
         const remaining = dailyLimit - usageData.count;
@@ -155,7 +157,7 @@ function handleConfirm() {
     const selectedType = window.selectedType || 'unlimited';
 
     if (selectedType === 'unlimited') {
-         chrome.storage.local.get(['unlimitedUses', 'dailyUnlimitedUsage', 'resetTime'], (data) => {
+         api.storage.local.get(['unlimitedUses', 'dailyUnlimitedUsage', 'resetTime'], (data) => {
             const dailyLimit = data.unlimitedUses || 5;
             const currentCycleStart = getCycleStart(Date.now(), data.resetTime || "00:00");
             const usageData = data.dailyUnlimitedUsage || { cycleStart: currentCycleStart, count: 0 };
@@ -174,7 +176,7 @@ function handleConfirm() {
             usageData.count = usageData.count + 1;
             usageData.cycleStart = currentCycleStart;
             
-            chrome.storage.local.set({ dailyUnlimitedUsage: usageData }, () => {
+            api.storage.local.set({ dailyUnlimitedUsage: usageData }, () => {
                  startSession('unlimited', null);
             });
         });
@@ -198,7 +200,7 @@ function handleConfirm() {
 }
 
 function startSession(type, value) {
-    chrome.runtime.sendMessage({
+    api.runtime.sendMessage({
         action: 'startSession',
         url: intendedUrl,
         type: type,
