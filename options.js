@@ -1,5 +1,4 @@
 document.addEventListener('DOMContentLoaded', restoreOptions);
-const api = typeof browser !== 'undefined' ? browser : chrome;
 document.getElementById('add-site').addEventListener('click', addSite);
 document.getElementById('save-config').addEventListener('click', saveOptions);
 
@@ -17,7 +16,7 @@ function getDomain(url) {
 }
 
 function restoreOptions() {
-    api.storage.local.get({
+    chrome.storage.local.get({
         targetSites: ['instagram.com', 'reddit.com', 'youtube.com'],
         unlimitedUses: 5,
         durationCooldown: 30,
@@ -83,7 +82,7 @@ function saveOptions() {
     
     const targetSites = Array.from(document.querySelectorAll('#site-list li')).map(li => li.childNodes[0].textContent);
 
-    api.storage.local.set({
+    chrome.storage.local.set({
         targetSites: targetSites,
         unlimitedUses: unlimitedUses,
         durationCooldown: durationCooldown,
