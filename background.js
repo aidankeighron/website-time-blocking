@@ -145,6 +145,9 @@ function getYouTubeVideoId(url) {
     try {
         const u = new URL(url);
         if (u.hostname.includes('youtube.com') || u.hostname.includes('youtu.be')) {
+            if (u.pathname.startsWith('/shorts/')) {
+                return u.pathname.split('/shorts/')[1].split('/')[0];
+            }
             return u.searchParams.get('v');
         }
     } catch(e) {}
