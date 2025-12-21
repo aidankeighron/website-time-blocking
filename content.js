@@ -61,12 +61,27 @@
                 overlay.classList.remove('warning');
             }
         } else if (session.type === 'count') {
-            overlay.textContent = `${session.videosWatched || 0} / ${session.targetCount} Videos`;
-             if ((session.videosWatched || 0) >= session.targetCount) {
-                  overlay.classList.add('warning');
-             } else {
-                  overlay.classList.remove('warning');
-             }
+            if (session.cooldownEndTime) {
+                const timeLeft = session.cooldownEndTime - Date.now();
+                if (timeLeft <= 0) {
+                     // Cooldown over, but technically session is still active until page refresh/check
+                     // or until we hit the limit in background
+                     overlay.textContent = "Cooldown Complete";
+                     overlay.classList.remove('warning');
+                } else {
+                    const minutes = Math.floor(timeLeft / 60000);
+                    const seconds = Math.floor((timeLeft % 60000) / 1000);
+                    overlay.textContent = `Cooldown: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+                    overlay.classList.add('warning');
+                }
+            } else {
+                overlay.textContent = `${session.videosWatched || 0} / ${session.targetCount} Videos`;
+                 if ((session.videosWatched || 0) >= session.targetCount) {
+                      overlay.classList.add('warning');
+                 } else {
+                      overlay.classList.remove('warning');
+                 }
+            }
         } else if (session.type === 'unlimited') {
              overlay.textContent = "Unlimited Session";
              

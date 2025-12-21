@@ -43,7 +43,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
 async function checkAccess(tabId, url, domain) {
     // Fetch all session state
-    const data = await chrome.storage.local.get(['activeSessions', 'cooldowns']);
+    const data = await chrome.storage.local.get(['activeSessions', 'cooldowns', 'countCooldown']);
     const sessions = data.activeSessions || {};
     const cooldowns = data.cooldowns || {};
     
@@ -86,6 +86,20 @@ async function checkAccess(tabId, url, domain) {
             return; // Allow access
 
         } else if (session.type === 'count') {
+            // Check Expiry first
+            if (session.cooldownEndTime && now > session.cooldownEndTime) {
+                 // Cooldown Expired -> Really end it now
+                 delete sessions[domain];
+                 // Clean up global cooldown just in case, though it should be expired
+                 if (cooldowns[domain] && cooldowns[domain] <= now) delete cooldowns[domain];
+                 
+                 await chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
+                 
+                 const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
+                 chrome.tabs.update(tabId, { url: promptUrl });
+                 return;
+            }
+
             // YouTube specific: Check video ID
             const videoId = getYouTubeVideoId(url);
             
@@ -98,19 +112,46 @@ async function checkAccess(tabId, url, domain) {
             if (videoId && !session.watchedVideoIds.includes(videoId)) {
                 // New unique video detected
                 session.videosWatched = (session.videosWatched || 0) + 1;
-                session.watchedVideoIds.push(videoId);
-                session.lastActive = now;
                 
                 if (session.videosWatched > session.targetCount) {
-                    endSessionAndStartCooldown(domain, 'count');
+                    // Start Cooldown / Limit Reached
+                    // BUT do not delete the session, so we can keep watching the old ones.
+                    // Just redirect THIS tab.
+                    
+                    // Ensure cooldown is set if it wasn't already (e.g. if we jumped straight to N+1)
+                    if (!session.cooldownEndTime) {
+                         const cooldownDuration = data.countCooldown || 30;
+                         const cooldownEnd = now + (cooldownDuration * 60 * 1000);
+                         session.cooldownEndTime = cooldownEnd;
+                         cooldowns[domain] = cooldownEnd;
+                         sessions[domain] = session;
+                         chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
+                    }
+
                     const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Limit%20Reached`);
                     chrome.tabs.update(tabId, { url: promptUrl });
                     return;
                 } else {
+                     // Add to whitelist
+                     session.watchedVideoIds.push(videoId);
+                     session.lastActive = now;
+
+                     // Check if we just hit the limit (Nth video)
+                     if (session.videosWatched === session.targetCount) {
+                         const cooldownDuration = data.countCooldown || 30; // default 30 min
+                         // Start cooldown NOW
+                         const cooldownEnd = now + (cooldownDuration * 60 * 1000);
+                         session.cooldownEndTime = cooldownEnd;
+                         
+                         cooldowns[domain] = cooldownEnd;
+                     }
+
                     sessions[domain] = session;
-                    chrome.storage.local.set({ activeSessions: sessions });
+                    // Save both provided we updated cooldowns
+                    chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
                 }
             } else {
+                 // Watching a known/whitelisted video OR not a video page
                  if (now - session.lastActive > 5000) { // 5s throttle
                      session.lastActive = now;
                      sessions[domain] = session;
@@ -163,8 +204,29 @@ async function endSessionAndStartCooldown(domain, type) {
     delete sessions[domain];
     
     // Set Cooldown
-    const cooldownDuration = (type === 'duration' ? data.durationCooldown : data.countCooldown) || 30; // default 30 min
-    cooldowns[domain] = Date.now() + (cooldownDuration * 60 * 1000);
+    // Check for existing valid cooldown in session before overwriting
+    // If the session already had a cooldown start time (from checking Nth video), we might want to respect that?
+    // Actually, if we are calling this, it implies we want to HARD RESET into a cooldown (e.g. limit exceeded or time up).
+    // But for count mode: if we are at N+1, the cooldown technically started at N.
+    // If we overwrite here, we extend the cooldown unfairly?
+    
+    // Let's check:
+    let cooldownEnd;
+    
+    // Try to retrieve existing session to see if it had a cooldownEndTime
+    // Note: 'sessions' argument here is just the list without the one we just deleted.
+    // We need to know if the DELETED session had a start time. 
+    // The previous code block fetching 'data' has 'activeSessions' BEFORE deletion.
+    const currentSession = data.activeSessions ? data.activeSessions[domain] : null;
+    
+    if (currentSession && currentSession.cooldownEndTime && currentSession.cooldownEndTime > Date.now()) {
+        cooldownEnd = currentSession.cooldownEndTime;
+    } else {
+         const cooldownDuration = (type === 'duration' ? data.durationCooldown : data.countCooldown) || 30; // default 30 min
+         cooldownEnd = Date.now() + (cooldownDuration * 60 * 1000);
+    }
+
+    cooldowns[domain] = cooldownEnd;
     
     await chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
 }
@@ -272,8 +334,25 @@ async function endSessionAndStartCooldown(domain, type) {
     chrome.alarms.clear(`session_${domain}`);
     
     // Set Cooldown
-    const cooldownDuration = (type === 'duration' ? data.durationCooldown : data.countCooldown) || 30; // default 30 min
-    cooldowns[domain] = Date.now() + (cooldownDuration * 60 * 1000);
+    // Set Cooldown
+    // Duplicate logic for bottom function (cleanup) if needed, 
+    // but the bottom function 'endSessionAndStartCooldown' at 263 seems to be a duplicate declaration? 
+    // Yes, 'endSessionAndStartCooldown' is defined TWICE in this file. (Line 157 and 263).
+    // The previous tool call modified the FIRST one. I should probably modify this one too or delete it if it's unused?
+    // JavaScript allows function redeclarations (var style) or overwrites?
+    // Let's modify this one too to be safe/consistent.
+    
+    const currentSession = data.activeSessions ? data.activeSessions[domain] : null;
+    let cooldownEnd;
+
+    if (currentSession && currentSession.cooldownEndTime && currentSession.cooldownEndTime > Date.now()) {
+        cooldownEnd = currentSession.cooldownEndTime;
+    } else {
+        const cooldownDuration = (type === 'duration' ? data.durationCooldown : data.countCooldown) || 30; 
+        cooldownEnd = Date.now() + (cooldownDuration * 60 * 1000);
+    }
+    
+    cooldowns[domain] = cooldownEnd;
     
     await chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
 }
