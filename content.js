@@ -29,7 +29,13 @@
         
         overlay = document.createElement('div');
         overlay.id = 'website-time-blocking-overlay';
-        document.body.appendChild(overlay);
+        
+        // Try to append to body, fallback to documentElement (html)
+        if (document.body) {
+            document.body.appendChild(overlay);
+        } else {
+            document.documentElement.appendChild(overlay);
+        }
     }
 
     function updateOverlay(session) {
