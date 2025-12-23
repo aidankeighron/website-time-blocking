@@ -211,35 +211,15 @@ async function endSessionAndStartCooldown(domain, type) {
     const sessions = data.activeSessions || {};
     const cooldowns = data.cooldowns || {};
     
-    // Remove session
     delete sessions[domain];
-    
-    // Set Cooldown
-    // Check for existing valid cooldown in session before overwriting
-    // If the session already had a cooldown start time (from checking Nth video), we might want to respect that?
-    // Actually, if we are calling this, it implies we want to HARD RESET into a cooldown (e.g. limit exceeded or time up).
-    // But for count mode: if we are at N+1, the cooldown technically started at N.
-    // If we overwrite here, we extend the cooldown unfairly?
-    
-    // Let's check:
+    const currentSession = data.activeSessions ? data.activeSessions[domain] : null;
+
     let cooldownEnd;
     
-    // Try to retrieve existing session to see if it had a cooldownEndTime
-    // Note: 'sessions' argument here is just the list without the one we just deleted.
-    // We need to know if the DELETED session had a start time. 
-    // The previous code block fetching 'data' has 'activeSessions' BEFORE deletion.
-    const currentSession = data.activeSessions ? data.activeSessions[domain] : null;
-    
-    // Check if we have a pre-calculated cooldown end time (e.g. from duration session start)
     if (currentSession && currentSession.cooldownEndTime) {
          cooldownEnd = currentSession.cooldownEndTime;
-         // If for some reason the pre-calculated time is in the past (unlikely if we just expired), 
-         // we might want to enforce a minimum just in case, but user requested specific behavior:
-         // "if you go back to a website after the sesssion and cooldown time have passed you can start a new session"
-         // So we TRUST the cooldownEndTime.
     } else {
-         // Fallback for sessions that didn't have it saved (legacy or count mode immediate trigger)
-         const cooldownDuration = (type === 'duration' ? data.durationCooldown : data.countCooldown) || 30; // default 30 min
+         const cooldownDuration = (type === 'duration' ? data.durationCooldown : data.countCooldown) || 30;
          cooldownEnd = Date.now() + (cooldownDuration * 60 * 1000);
     }
 
