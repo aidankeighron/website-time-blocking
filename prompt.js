@@ -19,9 +19,21 @@ async function init() {
     const currentCycleStart = getCycleStart(now, data.resetTime || "00:00");
     
     // Check Cooldown in Storage (Priority UI check)
-    if (data.cooldowns && data.cooldowns[domain] && data.cooldowns[domain] > now) {
-        showCooldownUI(data.cooldowns[domain], data);
-        return;
+    if (data.cooldowns && data.cooldowns[domain]) {
+        // New structure: { startTime, duration }
+        // Fallback for migration if old number exists
+        let endTime;
+        if (typeof data.cooldowns[domain] === 'number') {
+             endTime = data.cooldowns[domain];
+        } else {
+             const { startTime, duration } = data.cooldowns[domain];
+             endTime = startTime + duration;
+        }
+
+        if (endTime > now) {
+            showCooldownUI(endTime, data);
+            return;
+        }
     }
     
     // If URL param says cooldown but storage doesn't (weird sync issue), trust params or storage? storage is source of truth.

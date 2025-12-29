@@ -88,12 +88,17 @@ async function checkAccess(tabId, url, domain) {
         } else if (session.type === 'count') {
             // Check Expiry first
             if (session.cooldownEndTime && now > session.cooldownEndTime) {
-                 // Cooldown Expired -> Really end it now
-                 delete sessions[domain];
-                 // Clean up global cooldown just in case, though it should be expired
-                 if (cooldowns[domain] && cooldowns[domain] <= now) delete cooldowns[domain];
+                 // **Count session specific cooldown logic might need review if we want to unify everything**
+                 // For now, let's respect the existing Count logic but ensure it uses the new structure if it triggers a full cooldown.
+                 // Actually, the user asked to remove the "entire cooldown system as it currently stands".
+                 // But session.cooldownEndTime in 'count' mode is a bit hybrid (it's a session that eventually expires).
+                 // Let's keep the internal logic for 'count' expiry, but when it officially ends, we use the new system.
                  
-                 await chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
+                 delete sessions[domain];
+                 await chrome.storage.local.set({ activeSessions: sessions });
+                 
+                 // If there's a lingering global cooldown, we trust the new checkAccess logic to catch it next time, 
+                 // but here we just expire the session.
                  
                  const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
                  chrome.tabs.update(tabId, { url: promptUrl });
@@ -129,12 +134,22 @@ async function checkAccess(tabId, url, domain) {
                     // BUT do not delete the session, so we can keep watching the old ones.
                     // Just redirect THIS tab.
                     
-                    // Ensure cooldown is set if it wasn't already (e.g. if we jumped straight to N+1)
+                    // We need to set the session's internal endpoint for Count expiration if not set
                     if (!session.cooldownEndTime) {
                          const cooldownDuration = data.countCooldown || 30;
                          const cooldownEnd = now + (cooldownDuration * 60 * 1000);
                          session.cooldownEndTime = cooldownEnd;
-                         cooldowns[domain] = cooldownEnd;
+                         
+                         // Note: We are strictly NOT setting the global domain block cooldown here yet?
+                         // The original code set `cooldowns[domain]`.
+                         // The user wants "cooldown info will still be tracked even if the browser is closed".
+                         // So we SHOULD set the global cooldown here too using new structure.
+                         
+                         cooldowns[domain] = {
+                             startTime: now,
+                             duration: cooldownDuration * 60 * 1000
+                         };
+                         
                          sessions[domain] = session;
                          chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
                     }
@@ -154,7 +169,10 @@ async function checkAccess(tabId, url, domain) {
                          const cooldownEnd = now + (cooldownDuration * 60 * 1000);
                          session.cooldownEndTime = cooldownEnd;
                          
-                         cooldowns[domain] = cooldownEnd;
+                         cooldowns[domain] = {
+                             startTime: now,
+                             duration: cooldownDuration * 60 * 1000
+                         };
                      }
 
                     sessions[domain] = session;
@@ -175,19 +193,22 @@ async function checkAccess(tabId, url, domain) {
     }
 
     // 2. Check Cooldown (If no active session)
-    if (cooldowns[domain] && cooldowns[domain] > now) {
-        const minutesLeft = Math.ceil((cooldowns[domain] - now) / 60000);
-        const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&cooldown=${minutesLeft}`);
-        chrome.tabs.update(tabId, { url: promptUrl });
-        return;
+    if (cooldowns[domain]) {
+        const { startTime, duration } = cooldowns[domain];
+        const endTime = startTime + duration; // Calculate end time dynamically
+        
+        if (endTime > now) {
+            const minutesLeft = Math.ceil((endTime - now) / 60000);
+            const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&cooldown=${minutesLeft}`);
+            chrome.tabs.update(tabId, { url: promptUrl });
+            return;
+        } else {
+            // Expired, clean up
+            delete cooldowns[domain];
+            await chrome.storage.local.set({ cooldowns });
+        }
     }
     
-    // Clean up expired cooldowns
-    if (cooldowns[domain] && cooldowns[domain] <= now) {
-        delete cooldowns[domain];
-        chrome.storage.local.set({ cooldowns });
-    }
-
     // 3. No Session & No Cooldown -> Redirect to Prompt to Start
     const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}`);
     chrome.tabs.update(tabId, { url: promptUrl });
@@ -212,18 +233,14 @@ async function endSessionAndStartCooldown(domain, type) {
     const cooldowns = data.cooldowns || {};
     
     delete sessions[domain];
-    const currentSession = data.activeSessions ? data.activeSessions[domain] : null;
-
-    let cooldownEnd;
     
-    if (currentSession && currentSession.cooldownEndTime) {
-         cooldownEnd = currentSession.cooldownEndTime;
-    } else {
-         const cooldownDuration = (type === 'duration' ? data.durationCooldown : data.countCooldown) || 30;
-         cooldownEnd = Date.now() + (cooldownDuration * 60 * 1000);
-    }
-
-    cooldowns[domain] = cooldownEnd;
+    const durationMinutes = (type === 'duration' ? data.durationCooldown : data.countCooldown) || 30;
+    
+    // New Structure: Store start time and duration
+    cooldowns[domain] = {
+        startTime: Date.now(),
+        duration: durationMinutes * 60 * 1000
+    };
     
     await chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
 }
