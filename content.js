@@ -9,15 +9,50 @@
         }
     }
 
+    function getStorage(keys) {
+        return new Promise((resolve) => {
+            // Prioritize standard 'browser' namespace (Firefox)
+            if (typeof browser !== 'undefined' && browser.storage && browser.storage.local) {
+                browser.storage.local.get(keys)
+                    .then(resolve)
+                    .catch((err) => {
+                        console.error("Website Time Blocking: Storage read error", err);
+                        resolve({});
+                    });
+            } 
+            // Fallback to 'chrome' namespace
+            else if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+                try {
+                    chrome.storage.local.get(keys, (result) => {
+                        if (chrome.runtime.lastError) {
+                            console.error("Website Time Blocking: Runtime error", chrome.runtime.lastError);
+                            resolve({});
+                        } else {
+                            resolve(result || {});
+                        }
+                    });
+                } catch (e) {
+                     console.error("Website Time Blocking: Exception accessing storage", e);
+                     resolve({});
+                }
+            } else {
+                resolve({});
+            }
+        });
+    }
+
     const domain = getDomain(window.location.href);
     if (!domain) return;
+    
+    console.log("Website Time Blocking: Content script running for", domain);
 
     // Check if we are a target site
-    const data = await chrome.storage.local.get(['targetSites', 'activeSessions']);
+    const data = await getStorage(['targetSites', 'activeSessions']);
     const targetSites = data.targetSites || [];
     
     // Simple check: is domain in target sites?
     if (!targetSites.includes(domain)) return;
+
 
     let overlay = null;
     let timerInterval = null;
