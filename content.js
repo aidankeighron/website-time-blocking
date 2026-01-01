@@ -1,5 +1,7 @@
 // content.js
 (async function() {
+    const DEFAULT_TARGETS = ['instagram.com', 'reddit.com', 'youtube.com'];
+
     function getDomain(url) {
         try {
             const hostname = new URL(url).hostname;
@@ -48,7 +50,7 @@
 
     // Check if we are a target site
     const data = await getStorage(['targetSites', 'activeSessions']);
-    const targetSites = data.targetSites || [];
+    const targetSites = data.targetSites || DEFAULT_TARGETS;
     
     // Simple check: is domain in target sites?
     if (!targetSites.includes(domain)) return;
