@@ -11,6 +11,9 @@ document.getElementById('target-site-display').textContent = `Accessing: ${hostn
 init();
 
 async function init() {
+    const data = await chrome.storage.local.get('cooldowns');
+    const domain = hostname;
+    const now = Date.now();
     // Check Cooldown in Storage (Priority UI check)
     if (data.cooldowns && data.cooldowns[domain]) {
         // New structure: { startTime, duration }
@@ -24,7 +27,7 @@ async function init() {
         }
 
         if (endTime > now) {
-            showCooldownUI(endTime, data);
+            showCooldownUI(endTime, data.cooldowns[domain]);
             return;
         }
     }
@@ -41,7 +44,7 @@ async function init() {
     setupNormalUI();
 }
 
-function showCooldownUI(endTime, data) {
+function showCooldownUI(endTime, cooldownInfo) {
     const minutesLeft = Math.ceil((endTime - Date.now()) / 60000);
     
     const canExtend = cooldownInfo.originalType === 'duration';
