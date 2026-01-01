@@ -54,27 +54,8 @@ async function checkAccess(tabId, url, domain) {
         const session = sessions[domain];
 
         // Validation Logic per type
-        if (session.type === 'unlimited') {
-            // Check for 20 minute inactivity
-            if (now - (session.lastActive || session.startTime) > 20 * 60 * 1000) {
-                 // Session Expired
-                 delete sessions[domain];
-                 await chrome.storage.local.set({ activeSessions: sessions });
-                 
-                 const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
-                 chrome.tabs.update(tabId, { url: promptUrl });
-                 return;
-            }
-            
-            // Update Activity (Throttled)
-            if (now - session.lastActive > 5000) { // 5s throttle
-                session.lastActive = now;
-                sessions[domain] = session;
-                chrome.storage.local.set({ activeSessions: sessions });
-            }
-            return; // Allow access
-
-        } else if (session.type === 'duration') {
+        // Validation Logic per type
+        if (session.type === 'duration') {
             const endTime = session.endTime;
             const cooldownDuration = data.durationCooldown || 30;
             const cooldownEndTime = endTime + (cooldownDuration * 60 * 1000);
@@ -296,23 +277,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sendResponse({ success: success });
         }).catch(err => sendResponse({ success: false, error: err.message }));
         return true; 
-    } else if (message.action === 'keepAlive') {
-        keepAlive(message.url);
     }
 });
 
-async function keepAlive(url) {
-    const domain = getDomain(url);
-    if (!domain) return;
-    
-    const data = await chrome.storage.local.get(['activeSessions']);
-    const sessions = data.activeSessions || {};
-    
-    if (sessions[domain] && sessions[domain].type === 'unlimited') {
-        sessions[domain].lastActive = Date.now();
-        await chrome.storage.local.set({ activeSessions: sessions });
-    }
-}
+
 
 async function startSession(url, type, value) {
     const domain = getDomain(url);
@@ -326,8 +294,7 @@ async function startSession(url, type, value) {
 
     const session = {
         type: type,
-        startTime: Date.now(),
-        lastActive: Date.now() // For unlimited timeout
+        startTime: Date.now()
     };
     
     if (type === 'duration') {

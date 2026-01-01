@@ -12,18 +12,11 @@
         <p id="target-site-display">You are trying to access...</p>
         
         <div class="type-selector">
-            <button class="type-btn active" data-type="unlimited">Unlimited</button>
-            <button class="type-btn" data-type="duration">Duration</button>
+            <button class="type-btn active" data-type="duration">Duration</button>
             <button class="type-btn" data-type="count" id="count-btn" style="display: none;">Count</button>
         </div>
 
         <div class="content">
-            <!-- Unlimited View -->
-            <div id="view-unlimited" class="view active-view">
-                <p>You have <span id="unlimited-remaining">0</span> unlimited sessions left for today.</p>
-                <div id="unlimited-warning" class="warning"></div>
-            </div>
-
             <!-- Duration View -->
             <div id="view-duration" class="view">
                 <label for="duration-input">Enter duration (minutes):</label>

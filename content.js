@@ -59,8 +59,6 @@
     let overlay = null;
     let timerInterval = null;
 
-    let lastHeartbeatSent = 0;
-
     function createOverlay() {
         if (document.getElementById('website-time-blocking-overlay')) return;
         
@@ -125,15 +123,6 @@
                       overlay.classList.remove('warning');
                  }
             }
-        } else if (session.type === 'unlimited') {
-             overlay.textContent = "Unlimited Session";
-             
-             // Send heartbeat
-             // Use local variable to throttle
-             if (Date.now() - lastHeartbeatSent > 60000) {
-                 lastHeartbeatSent = Date.now();
-                 chrome.runtime.sendMessage({ action: 'keepAlive', url: window.location.href });
-             }
         }
     }
 
