@@ -43,7 +43,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
 async function checkAccess(tabId, url, domain) {
     // Fetch all session state
-    const data = await chrome.storage.local.get(['activeSessions', 'cooldowns', 'countCooldown']);
+    const data = await chrome.storage.local.get(['activeSessions', 'cooldowns', 'countCooldown', 'durationCooldown']);
     const sessions = data.activeSessions || {};
     const cooldowns = data.cooldowns || {};
     
@@ -76,9 +76,20 @@ async function checkAccess(tabId, url, domain) {
 
         } else if (session.type === 'duration') {
             const endTime = session.endTime;
-            if (now > endTime) {
-                // Expired -> Start Cooldown -> Redirect
-                endSessionAndStartCooldown(domain, 'duration');
+            const cooldownDuration = data.durationCooldown || 30;
+            const cooldownEndTime = endTime + (cooldownDuration * 60 * 1000);
+
+            if (now > cooldownEndTime) {
+                 // Session exited AND Cooldown exited while browser was closed
+                 delete sessions[domain];
+                 await chrome.storage.local.set({ activeSessions: sessions });
+                 
+                 const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
+                 chrome.tabs.update(tabId, { url: promptUrl });
+                 return;
+            } else if (now > endTime) {
+                // Expired -> Start Cooldown (Backdated to actual end time) -> Redirect
+                endSessionAndStartCooldown(domain, 'duration', endTime);
                 const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Time%20Up`);
                 chrome.tabs.update(tabId, { url: promptUrl });
                 return;
@@ -227,7 +238,7 @@ function getYouTubeVideoId(url) {
     return null;
 }
 
-async function endSessionAndStartCooldown(domain, type) {
+async function endSessionAndStartCooldown(domain, type, overrideStartTime = null) {
     const data = await chrome.storage.local.get(['activeSessions', 'cooldowns', 'durationCooldown', 'countCooldown']);
     const sessions = data.activeSessions || {};
     const cooldowns = data.cooldowns || {};
@@ -238,7 +249,7 @@ async function endSessionAndStartCooldown(domain, type) {
     
     // New Structure: Store start time and duration
     cooldowns[domain] = {
-        startTime: Date.now(),
+        startTime: overrideStartTime || Date.now(),
         duration: durationMinutes * 60 * 1000
     };
     
@@ -257,7 +268,11 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         
         // Verify session is still active and duration type
         if (data.activeSessions && data.activeSessions[domain] && data.activeSessions[domain].type === 'duration') {
-             endSessionAndStartCooldown(domain, 'duration');
+             // Use the planned end time for precision, or Date.now() if needed. 
+             // Since alarm fired, Date.now() is approx endTime. 
+             // But simpler to just pass session.endTime if available.
+             const session = data.activeSessions[domain];
+             endSessionAndStartCooldown(domain, 'duration', session.endTime);
              
              // Redirect pages immediately
              tabs.forEach(tab => {
