@@ -250,7 +250,8 @@ async function endSessionAndStartCooldown(domain, type, overrideStartTime = null
     // New Structure: Store start time and duration
     cooldowns[domain] = {
         startTime: overrideStartTime || Date.now(),
-        duration: durationMinutes * 60 * 1000
+        duration: durationMinutes * 60 * 1000,
+        originalType: type
     };
     
     await chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });

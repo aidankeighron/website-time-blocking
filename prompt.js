@@ -66,19 +66,34 @@ function showCooldownUI(endTime, data) {
     
     const remainingUnlimited = dailyLimit - usageData.count;
     const canBypass = remainingUnlimited > 0;
+    
+    // Check if we can offer 30s extension
+    const cooldownInfo = data.cooldowns[hostname.replace(/^(www\.|m\.|mobile\.)/, '')] || {};
+    const canExtend = cooldownInfo.originalType === 'duration';
 
     let bypassHtml = '';
+    
+    if (canExtend) {
+        bypassHtml += `
+            <div class="extension-section" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #333;">
+                <button id="extend-btn" style="background-color: #03dac6; color: #000; padding: 10px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; margin-bottom: 15px; width: 100%;">
+                    Use for 30s
+                </button>
+            </div>
+        `;
+    }
+
     if (canBypass) {
-        bypassHtml = `
-            <div class="bypass-section" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #333;">
+        bypassHtml += `
+            <div class="bypass-section" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #333;">
                 <p>You have ${remainingUnlimited} unlimited sessions left.</p>
-                <button id="bypass-btn" style="background-color: #bb86fc; color: #000; padding: 10px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer;">
+                <button id="bypass-btn" style="background-color: #bb86fc; color: #000; padding: 10px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; width: 100%;">
                     Use Unlimited & Bypass
                 </button>
             </div>
         `;
     } else {
-         bypassHtml = `<p class="small-text" style="color: #777; margin-top: 20px;">No unlimited sessions available to bypass.</p>`;
+         bypassHtml += `<p class="small-text" style="color: #777; margin-top: 20px;">No unlimited sessions available to bypass.</p>`;
     }
 
     document.body.innerHTML = `
@@ -90,6 +105,12 @@ function showCooldownUI(endTime, data) {
         </div>
     ` + '<link rel="stylesheet" href="prompt.css">'; 
     
+    if (canExtend) {
+        document.getElementById('extend-btn').addEventListener('click', () => {
+             startSession('duration', 0.5); // 0.5 minutes = 30 seconds
+        });
+    }
+
     if (canBypass) {
         document.getElementById('bypass-btn').addEventListener('click', () => {
              // Increment usage
