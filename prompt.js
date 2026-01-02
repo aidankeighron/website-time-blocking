@@ -3,7 +3,17 @@ const params = new URLSearchParams(window.location.search);
 const intendedUrl = params.get('url');
 const cooldownVal = params.get('cooldown');
 const msgVal = params.get('msg');
+// Use getDomain helper for consistency with background.js
 const hostname = intendedUrl ? new URL(intendedUrl).hostname : 'Unknown';
+
+function getDomain(url) {
+    try {
+        const hostname = new URL(url).hostname;
+        return hostname.replace(/^(www\.|m\.|mobile\.)/, '');
+    } catch (e) {
+        return null;
+    }
+}
 
 document.getElementById('target-site-display').textContent = `Accessing: ${hostname}`;
 
@@ -12,7 +22,13 @@ init();
 
 async function init() {
     const data = await chrome.storage.local.get('cooldowns');
-    const domain = hostname;
+    // Normalize domain to match storage key
+    const domain = intendedUrl ? getDomain(intendedUrl) : (hostname !== 'Unknown' ? getDomain('http://' + hostname) : null);
+    
+    if (!domain) {
+        setupNormalUI();
+        return;
+    }
     const now = Date.now();
     // Check Cooldown in Storage (Priority UI check)
     if (data.cooldowns && data.cooldowns[domain]) {
