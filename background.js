@@ -70,7 +70,7 @@ async function checkAccess(tabId, url, domain) {
                  return;
             } else if (now > endTime) {
                 // Expired -> Start Cooldown (Backdated to actual end time) -> Redirect
-                endSessionAndStartCooldown(domain, 'duration', endTime);
+                await endSessionAndStartCooldown(domain, 'duration', endTime);
                 const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Time%20Up`);
                 chrome.tabs.update(tabId, { url: promptUrl });
                 return;
@@ -143,7 +143,7 @@ async function checkAccess(tabId, url, domain) {
                          };
                          
                          sessions[domain] = session;
-                         chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
+                         await chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
                     }
 
                     const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Limit%20Reached`);
@@ -169,14 +169,14 @@ async function checkAccess(tabId, url, domain) {
 
                     sessions[domain] = session;
                     // Save both provided we updated cooldowns
-                    chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
+                    await chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
                 }
             } else {
                  // Watching a known/whitelisted video OR not a video page
                  if (now - session.lastActive > 5000) { // 5s throttle
                      session.lastActive = now;
                      sessions[domain] = session;
-                     chrome.storage.local.set({ activeSessions: sessions });
+                     await chrome.storage.local.set({ activeSessions: sessions });
                  }
             }
 
@@ -254,7 +254,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
              // Since alarm fired, Date.now() is approx endTime. 
              // But simpler to just pass session.endTime if available.
              const session = data.activeSessions[domain];
-             endSessionAndStartCooldown(domain, 'duration', session.endTime);
+             await endSessionAndStartCooldown(domain, 'duration', session.endTime);
              
              // Redirect pages immediately
              tabs.forEach(tab => {
