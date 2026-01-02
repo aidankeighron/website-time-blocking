@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Website Time Blocking",
-  "version": "1.11",
+  "version": "1.12",
   "description": "Control your website usage with blocking types.",
   "permissions": [
     "storage",
