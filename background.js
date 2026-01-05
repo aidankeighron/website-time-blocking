@@ -1,10 +1,10 @@
 // background.js
 
 // State management
-// We use chrome.storage.local for persistence, but we can keep a local cache for speed.
-// However, since service workers can terminate, we must rely on storage.
+// We use chrome.storage.local for persistence.
 
 const DEFAULT_TARGETS = ['instagram.com', 'reddit.com', 'youtube.com'];
+const processingTabs = new Set(); // FIX: Set to track tabs currently being processed
 
 // Helper to get domain
 function getDomain(url) {
@@ -33,11 +33,26 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     // If the tab is just loading the prompt, ignore logic to prevent loops
     if (tab.url.startsWith(chrome.runtime.getURL('prompt.html'))) return;
     
+    // FIX: Check if we are already processing this tab to prevent race conditions
+    if (processingTabs.has(tabId)) return;
+
     const domain = getDomain(tab.url);
     if (!domain) return;
     
-    if (await isTargetSite(tab.url)) {
-        checkAccess(tabId, tab.url, domain);
+    // FIX: Lock the tab
+    processingTabs.add(tabId);
+
+    try {
+        if (await isTargetSite(tab.url)) {
+            await checkAccess(tabId, tab.url, domain);
+        }
+    } finally {
+        // FIX: Release the lock after a short delay (1000ms).
+        // This ensures the redirect has time to take effect before we listen again,
+        // effectively debouncing the event stream.
+        setTimeout(() => {
+            processingTabs.delete(tabId);
+        }, 1000);
     }
 });
 
@@ -53,7 +68,6 @@ async function checkAccess(tabId, url, domain) {
     if (sessions[domain]) {
         const session = sessions[domain];
 
-        // Validation Logic per type
         // Validation Logic per type
         if (session.type === 'duration') {
             const endTime = session.endTime;
@@ -80,17 +94,8 @@ async function checkAccess(tabId, url, domain) {
         } else if (session.type === 'count') {
             // Check Expiry first
             if (session.cooldownEndTime && now > session.cooldownEndTime) {
-                 // **Count session specific cooldown logic might need review if we want to unify everything**
-                 // For now, let's respect the existing Count logic but ensure it uses the new structure if it triggers a full cooldown.
-                 // Actually, the user asked to remove the "entire cooldown system as it currently stands".
-                 // But session.cooldownEndTime in 'count' mode is a bit hybrid (it's a session that eventually expires).
-                 // Let's keep the internal logic for 'count' expiry, but when it officially ends, we use the new system.
-                 
                  delete sessions[domain];
                  await chrome.storage.local.set({ activeSessions: sessions });
-                 
-                 // If there's a lingering global cooldown, we trust the new checkAccess logic to catch it next time, 
-                 // but here we just expire the session.
                  
                  const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
                  chrome.tabs.update(tabId, { url: promptUrl });
@@ -123,19 +128,10 @@ async function checkAccess(tabId, url, domain) {
                 
                 if (session.videosWatched > session.targetCount) {
                     // Start Cooldown / Limit Reached
-                    // BUT do not delete the session, so we can keep watching the old ones.
-                    // Just redirect THIS tab.
-                    
-                    // We need to set the session's internal endpoint for Count expiration if not set
                     if (!session.cooldownEndTime) {
                          const cooldownDuration = data.countCooldown || 30;
                          const cooldownEnd = now + (cooldownDuration * 60 * 1000);
                          session.cooldownEndTime = cooldownEnd;
-                         
-                         // Note: We are strictly NOT setting the global domain block cooldown here yet?
-                         // The original code set `cooldowns[domain]`.
-                         // The user wants "cooldown info will still be tracked even if the browser is closed".
-                         // So we SHOULD set the global cooldown here too using new structure.
                          
                          cooldowns[domain] = {
                              startTime: now,
@@ -168,7 +164,6 @@ async function checkAccess(tabId, url, domain) {
                      }
 
                     sessions[domain] = session;
-                    // Save both provided we updated cooldowns
                     await chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
                 }
             } else {
@@ -238,7 +233,6 @@ async function endSessionAndStartCooldown(domain, type, overrideStartTime = null
     await chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
 }
 
-
 // Handle Alarms for Duration Expiry
 chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (alarm.name.startsWith('session_')) {
@@ -250,9 +244,6 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         
         // Verify session is still active and duration type
         if (data.activeSessions && data.activeSessions[domain] && data.activeSessions[domain].type === 'duration') {
-             // Use the planned end time for precision, or Date.now() if needed. 
-             // Since alarm fired, Date.now() is approx endTime. 
-             // But simpler to just pass session.endTime if available.
              const session = data.activeSessions[domain];
              await endSessionAndStartCooldown(domain, 'duration', session.endTime);
              
@@ -279,8 +270,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true; 
     }
 });
-
-
 
 async function startSession(url, type, value) {
     const domain = getDomain(url);
@@ -321,7 +310,3 @@ async function startSession(url, type, value) {
     await chrome.storage.local.set({ activeSessions: sessions });
     return true;
 }
-
-// ... existing utility functions ...
-
-
