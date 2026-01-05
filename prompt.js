@@ -21,7 +21,7 @@ document.getElementById('target-site-display').textContent = `Accessing: ${hostn
 init();
 
 async function init() {
-    const data = await chrome.storage.local.get('cooldowns');
+    const data = await chrome.storage.local.get(['cooldowns', 'inputDelay']);
     // Normalize domain to match storage key
     const domain = intendedUrl ? getDomain(intendedUrl) : (hostname !== 'Unknown' ? getDomain('http://' + hostname) : null);
     
@@ -57,7 +57,9 @@ async function init() {
         document.getElementById('error-msg').textContent = decodeURIComponent(msgVal);
     }
     
-    setupNormalUI();
+    // Default to 0 if not set
+    const delay = data.inputDelay || 0;
+    setupNormalUI(delay);
 }
 
 function showCooldownUI(endTime, cooldownInfo) {
@@ -93,7 +95,7 @@ function showCooldownUI(endTime, cooldownInfo) {
     }
 }
 
-function setupNormalUI() {
+function setupNormalUI(delay = 0) {
     // show 'Count' only if it is youtube
     if (hostname.includes('youtube.com')) {
         document.getElementById('count-btn').style.display = 'inline-block';
@@ -108,7 +110,33 @@ function setupNormalUI() {
     setupTypeSwitching();
     // updateUnlimitedStatus(); // Removed
     
-    document.getElementById('confirm-btn').addEventListener('click', handleConfirm);
+    const confirmBtn = document.getElementById('confirm-btn');
+    confirmBtn.addEventListener('click', handleConfirm);
+    
+    if (delay > 0) {
+        const inputs = document.querySelectorAll('input, button.type-btn');
+        inputs.forEach(el => el.disabled = true);
+        confirmBtn.disabled = true;
+        
+        // Also disable any inputs created above (specifically count-input)
+        document.getElementById('count-input').disabled = true;
+        
+        let timeLeft = delay;
+        confirmBtn.textContent = `Wait ${timeLeft}...`;
+        
+        const timer = setInterval(() => {
+            timeLeft--;
+            if (timeLeft <= 0) {
+                clearInterval(timer);
+                inputs.forEach(el => el.disabled = false);
+                document.getElementById('count-input').disabled = false;
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = "Continue to Site";
+            } else {
+                confirmBtn.textContent = `Wait ${timeLeft}...`;
+            }
+        }, 1000);
+    }
 }
 
 function setupTypeSwitching() {
