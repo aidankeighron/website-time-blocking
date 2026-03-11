@@ -6,6 +6,11 @@ const msgVal = params.get('msg');
 // Use getDomain helper for consistency with background.js
 const hostname = intendedUrl ? new URL(intendedUrl).hostname : 'Unknown';
 
+// Replace state to avoid adding to history if possible, or at least mark this entry
+if (window.history.replaceState) {
+    window.history.replaceState(null, '', window.location.href);
+}
+
 function getDomain(url) {
     try {
         const hostname = new URL(url).hostname;
@@ -56,9 +61,29 @@ async function init() {
     if (msgVal) {
         document.getElementById('error-msg').textContent = decodeURIComponent(msgVal);
     }
-    
-    // Default to 0 if not set
+
     const delay = data.inputDelay || 0;
+
+    // Check if we already have an active session for this domain
+    // If we do, and it's still valid, redirect immediately (handles 'back' button into prompt)
+    if (data.activeSessions && data.activeSessions[domain]) {
+        const session = data.activeSessions[domain];
+        const now = Date.now();
+        if (session.type === 'duration' && session.endTime > now) {
+            window.location.replace(intendedUrl);
+            return;
+        } 
+        else if (session.type === 'count' && (!session.cooldownEndTime || session.cooldownEndTime < now)) {
+            // For count, if not in cooldown, it's technically 'active'
+            // However, the background script manages the limit. 
+            // If the user backed into here, we should probably let them through if they haven't hit the limit.
+            if ((session.videosWatched || 0) < session.targetCount) {
+                window.location.replace(intendedUrl);
+                return;
+            }
+        }
+    }
+
     setupNormalUI(delay);
 }
 
@@ -188,7 +213,7 @@ function startSession(type, value) {
         value: value
     }, (response) => {
         if (response && response.success) {
-           window.location.href = intendedUrl;
+           window.location.replace(intendedUrl);
         } else {
              document.getElementById('error-msg').textContent = response.error || "Failed to start session.";
         }
