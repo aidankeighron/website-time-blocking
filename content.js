@@ -123,6 +123,9 @@
                       overlay.classList.remove('warning');
                  }
             }
+        } else if (session.type === 'single_url') {
+             overlay.textContent = "Finish this post/video";
+             overlay.classList.remove('warning');
         }
     }
 

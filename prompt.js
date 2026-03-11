@@ -87,21 +87,48 @@ async function init() {
     setupNormalUI(delay);
 }
 
+function isSpecificContent(url) {
+    if (!url) return false;
+    try {
+        const u = new URL(url);
+        if (u.hostname.includes('youtube.com') || u.hostname.includes('youtu.be')) {
+            if (u.pathname.startsWith('/shorts/')) return true;
+            if (u.searchParams.get('v')) return true;
+        }
+        if (u.hostname.includes('reddit.com')) {
+            if (u.pathname.match(/\/r\/[\w-]+\/comments\/[\w]+\/?/)) return true;
+        }
+    } catch(e) {}
+    return false;
+}
+
 function showCooldownUI(endTime, cooldownInfo) {
     const minutesLeft = Math.ceil((endTime - Date.now()) / 60000);
     
     const canExtend = cooldownInfo.originalType === 'duration';
+    const canFinish = isSpecificContent(intendedUrl);
 
     let bypassHtml = '';
     
-    if (canExtend) {
+    if (canExtend || canFinish) {
         bypassHtml += `
             <div class="extension-section" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #333;">
+        `;
+        if (canExtend) {
+            bypassHtml += `
                 <button id="extend-btn" style="background-color: #03dac6; color: #000; padding: 10px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; margin-bottom: 15px; width: 100%;">
                     Use for 30s
                 </button>
-            </div>
-        `;
+            `;
+        }
+        if (canFinish) {
+            bypassHtml += `
+                <button id="finish-btn" style="background-color: #bb86fc; color: #000; padding: 10px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; margin-bottom: 15px; width: 100%;">
+                    Finish Video/Post
+                </button>
+            `;
+        }
+        bypassHtml += `</div>`;
     }
 
     document.body.innerHTML = `
@@ -114,9 +141,20 @@ function showCooldownUI(endTime, cooldownInfo) {
     ` + '<link rel="stylesheet" href="prompt.css">'; 
     
     if (canExtend) {
-        document.getElementById('extend-btn').addEventListener('click', () => {
-             startSession('duration', 0.5); // 0.5 minutes = 30 seconds
-        });
+        const extendBtn = document.getElementById('extend-btn');
+        if (extendBtn) {
+            extendBtn.addEventListener('click', () => {
+                 startSession('duration', 0.5); // 0.5 minutes = 30 seconds
+            });
+        }
+    }
+    if (canFinish) {
+        const finishBtn = document.getElementById('finish-btn');
+        if (finishBtn) {
+            finishBtn.addEventListener('click', () => {
+                 startSession('single_url', intendedUrl);
+            });
+        }
     }
 }
 

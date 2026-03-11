@@ -176,6 +176,18 @@ async function checkAccess(tabId, url, domain) {
             }
 
             return; // Allow access
+        } else if (session.type === 'single_url') {
+            if (checkSingleUrlMatch(url, session.targetUrl)) {
+                 return; // Allow access
+            } else {
+                 // Navigated away. End this single_url session.
+                 delete sessions[domain];
+                 await chrome.storage.local.set({ activeSessions: sessions });
+                 
+                 const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Finished`);
+                 chrome.tabs.update(tabId, { url: promptUrl });
+                 return;
+            }
         }
     }
 
@@ -199,6 +211,34 @@ async function checkAccess(tabId, url, domain) {
     // 3. No Session & No Cooldown -> Redirect to Prompt to Start
     const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}`);
     chrome.tabs.update(tabId, { url: promptUrl });
+}
+
+function checkSingleUrlMatch(currentUrl, targetUrl) {
+    if (!currentUrl || !targetUrl) return false;
+    if (currentUrl === targetUrl) return true;
+    try {
+        const curr = new URL(currentUrl);
+        const tgt = new URL(targetUrl);
+        if ((curr.hostname.includes('youtube.com') || curr.hostname.includes('youtu.be')) &&
+            (tgt.hostname.includes('youtube.com') || tgt.hostname.includes('youtu.be'))) {
+            const currVid = getYouTubeVideoId(currentUrl);
+            const tgtVid = getYouTubeVideoId(targetUrl);
+            if (currVid && tgtVid && currVid === tgtVid) return true;
+            return false;
+        }
+        if (curr.hostname.includes('reddit.com') && tgt.hostname.includes('reddit.com')) {
+            const currPath = curr.pathname.replace(/\/$/, "");
+            const tgtPath = tgt.pathname.replace(/\/$/, "");
+            const redditPostRegex = /\/r\/[\w-]+\/comments\/([\w]+)/;
+            const currMatch = currPath.match(redditPostRegex);
+            const tgtMatch = tgtPath.match(redditPostRegex);
+            if (currMatch && tgtMatch && currMatch[1] === tgtMatch[1]) return true;
+            return false;
+        }
+        return false;
+    } catch(e) {
+        return false;
+    }
 }
 
 function getYouTubeVideoId(url) {
@@ -304,6 +344,8 @@ async function startSession(url, type, value) {
              session.videosWatched = 1;
              session.watchedVideoIds.push(vid);
         }
+    } else if (type === 'single_url') {
+        session.targetUrl = value;
     }
     
     sessions[domain] = session;
