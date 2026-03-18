@@ -140,7 +140,7 @@
         // Start lighter timer for duration updates AND heartbeats
         timerInterval = setInterval(() => {
              updateOverlay(currentSession);
-        }, 5000); // 5 sec interval as requested
+        }, 1000); // 1 sec interval as requested
     }
 
     // Listen for changes
@@ -163,7 +163,7 @@
                  // If timer wasn't running (e.g. startup), start it
                  if (!timerInterval) {
                      updateOverlay(session);
-                     timerInterval = setInterval(() => updateOverlay(currentSession), 5000);
+                     timerInterval = setInterval(() => updateOverlay(currentSession), 1000);
                  } 
                  // REMOVED: Immediate updateOverlay(session) here, because if that triggered a write (heartbeat)
                  // it would cause an infinite loop with storage.onChanged.
