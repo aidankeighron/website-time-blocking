@@ -20,11 +20,13 @@ function restoreOptions() {
         targetSites: ['instagram.com', 'reddit.com', 'youtube.com'],
         durationCooldown: 30,
         countCooldown: 30,
-        inputDelay: 0
+        inputDelay: 0,
+        extensionDuration: 30
     }, (items) => {
         document.getElementById('duration-cooldown').value = items.durationCooldown;
         document.getElementById('count-cooldown').value = items.countCooldown;
         document.getElementById('input-delay').value = items.inputDelay;
+        document.getElementById('extension-duration').value = items.extensionDuration;
         
         const list = document.getElementById('site-list');
         list.innerHTML = '';
@@ -76,14 +78,16 @@ function saveOptions() {
     const durationCooldown = parseInt(document.getElementById('duration-cooldown').value, 10);
     const countCooldown = parseInt(document.getElementById('count-cooldown').value, 10);
     const inputDelay = parseInt(document.getElementById('input-delay').value, 10);
-    
+    const extensionDuration = parseInt(document.getElementById('extension-duration').value, 10);
+
     const targetSites = Array.from(document.querySelectorAll('#site-list li')).map(li => li.childNodes[0].textContent);
 
     chrome.storage.local.set({
         targetSites: targetSites,
         durationCooldown: durationCooldown,
         countCooldown: countCooldown,
-        inputDelay: inputDelay
+        inputDelay: inputDelay,
+        extensionDuration: extensionDuration
     }, () => {
         showStatus('Settings saved.');
     });

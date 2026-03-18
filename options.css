@@ -117,5 +117,12 @@ li {
     height: 20px;
 }
 
+.hint {
+    color: #777;
+    font-size: 0.8rem;
+    margin-top: -10px;
+    margin-bottom: 15px;
+}
+
 .success { color: #03dac6; }
 .error { color: #cf6679; }

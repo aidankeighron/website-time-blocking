@@ -26,7 +26,7 @@ document.getElementById('target-site-display').textContent = `Accessing: ${hostn
 init();
 
 async function init() {
-    const data = await chrome.storage.local.get(['cooldowns', 'inputDelay']);
+    const data = await chrome.storage.local.get(['cooldowns', 'inputDelay', 'extensionDuration']);
     // Normalize domain to match storage key
     const domain = intendedUrl ? getDomain(intendedUrl) : (hostname !== 'Unknown' ? getDomain('http://' + hostname) : null);
     
@@ -48,7 +48,9 @@ async function init() {
         }
 
         if (endTime > now) {
-            showCooldownUI(endTime, data.cooldowns[domain]);
+            const delay = data.inputDelay || 0;
+            const extDuration = data.extensionDuration !== undefined ? data.extensionDuration : 30;
+            showCooldownUI(endTime, data.cooldowns[domain], delay, extDuration);
             return;
         }
     }
@@ -102,29 +104,32 @@ function isSpecificContent(url) {
     return false;
 }
 
-function showCooldownUI(endTime, cooldownInfo) {
+function showCooldownUI(endTime, cooldownInfo, delay = 0, extensionDuration = 30) {
     const minutesLeft = Math.ceil((endTime - Date.now()) / 60000);
-    
-    const canExtend = cooldownInfo.originalType === 'duration';
+
+    const canExtend = cooldownInfo.originalType === 'duration' && extensionDuration > 0;
     const canFinish = isSpecificContent(intendedUrl);
 
+    const extendLabel = `Use for ${extensionDuration}s`;
+    const finishLabel = 'Finish Video/Post';
+
     let bypassHtml = '';
-    
+
     if (canExtend || canFinish) {
         bypassHtml += `
             <div class="extension-section" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #333;">
         `;
         if (canExtend) {
             bypassHtml += `
-                <button id="extend-btn" style="background-color: #03dac6; color: #000; padding: 10px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; margin-bottom: 15px; width: 100%;">
-                    Use for 30s
+                <button id="extend-btn" disabled style="background-color: #03dac6; color: #000; padding: 10px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; margin-bottom: 15px; width: 100%;">
+                    ${delay > 0 ? `Wait ${delay}...` : extendLabel}
                 </button>
             `;
         }
         if (canFinish) {
             bypassHtml += `
-                <button id="finish-btn" style="background-color: #bb86fc; color: #000; padding: 10px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; margin-bottom: 15px; width: 100%;">
-                    Finish Video/Post
+                <button id="finish-btn" disabled style="background-color: #bb86fc; color: #000; padding: 10px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; margin-bottom: 15px; width: 100%;">
+                    ${delay > 0 ? `Wait ${delay}...` : finishLabel}
                 </button>
             `;
         }
@@ -138,23 +143,44 @@ function showCooldownUI(endTime, cooldownInfo) {
             <p class="small-text">Go do something else!</p>
             ${bypassHtml}
         </div>
-    ` + '<link rel="stylesheet" href="prompt.css">'; 
-    
-    if (canExtend) {
-        const extendBtn = document.getElementById('extend-btn');
-        if (extendBtn) {
-            extendBtn.addEventListener('click', () => {
-                 startSession('duration', 0.5); // 0.5 minutes = 30 seconds
-            });
-        }
+    ` + '<link rel="stylesheet" href="prompt.css">';
+
+    const extendBtn = canExtend ? document.getElementById('extend-btn') : null;
+    const finishBtn = canFinish ? document.getElementById('finish-btn') : null;
+
+    if (delay > 0) {
+        let timeLeft = delay;
+        const timer = setInterval(() => {
+            timeLeft--;
+            if (timeLeft <= 0) {
+                clearInterval(timer);
+                if (extendBtn) {
+                    extendBtn.disabled = false;
+                    extendBtn.textContent = extendLabel;
+                }
+                if (finishBtn) {
+                    finishBtn.disabled = false;
+                    finishBtn.textContent = finishLabel;
+                }
+            } else {
+                if (extendBtn) extendBtn.textContent = `Wait ${timeLeft}...`;
+                if (finishBtn) finishBtn.textContent = `Wait ${timeLeft}...`;
+            }
+        }, 1000);
+    } else {
+        if (extendBtn) extendBtn.disabled = false;
+        if (finishBtn) finishBtn.disabled = false;
     }
-    if (canFinish) {
-        const finishBtn = document.getElementById('finish-btn');
-        if (finishBtn) {
-            finishBtn.addEventListener('click', () => {
-                 startSession('single_url', intendedUrl);
-            });
-        }
+
+    if (extendBtn) {
+        extendBtn.addEventListener('click', () => {
+            startSession('duration', extensionDuration / 60); // convert seconds to minutes
+        });
+    }
+    if (finishBtn) {
+        finishBtn.addEventListener('click', () => {
+            startSession('single_url', intendedUrl);
+        });
     }
 }
 
