@@ -117,18 +117,18 @@ function showCooldownUI(endTime, cooldownInfo, delay = 0, extensionDuration = 30
 
     if (canExtend || canFinish) {
         bypassHtml += `
-            <div class="extension-section" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #333;">
+            <div class="extension-section">
         `;
         if (canExtend) {
             bypassHtml += `
-                <button id="extend-btn" disabled style="background-color: #03dac6; color: #000; padding: 10px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; margin-bottom: 15px; width: 100%;">
+                <button id="extend-btn" disabled>
                     ${delay > 0 ? `Wait ${delay}...` : extendLabel}
                 </button>
             `;
         }
         if (canFinish) {
             bypassHtml += `
-                <button id="finish-btn" disabled style="background-color: #bb86fc; color: #000; padding: 10px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; margin-bottom: 15px; width: 100%;">
+                <button id="finish-btn" disabled>
                     ${delay > 0 ? `Wait ${delay}...` : finishLabel}
                 </button>
             `;
@@ -137,8 +137,8 @@ function showCooldownUI(endTime, cooldownInfo, delay = 0, extensionDuration = 30
     }
 
     document.body.innerHTML = `
-        <div class="container" style="max-width: 400px;">
-            <h1 style="color: #cf6679;">Cooldown Active</h1>
+        <div class="container">
+            <h1 class="cooldown-title">Cooldown Active</h1>
             <p>You cannot access ${hostname} for another <span id="cd-timer">${minutesLeft}</span> minutes.</p>
             <p class="small-text">Go do something else!</p>
             ${bypassHtml}

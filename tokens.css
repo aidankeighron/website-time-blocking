@@ -1,0 +1,57 @@
+:root {
+    /* 8 semantic color tokens — dark mode + purple, static */
+    --foreground:             hsl(0, 0%, 100%);
+    --background:             hsl(0, 0%, 15%);
+    --alt-background:         hsl(280, 50%, 30%);
+    --alt-foreground:         hsl(280, 75%, 75%);
+    --accent:                 hsl(280, 75%, 50%);
+    --alt-accent:             hsl(280, 75%, 90%);
+    --alt-background-neutral: hsl(0, 0%, 30%);
+    --alt-foreground-neutral: hsl(0, 0%, 75%);
+
+    /* Extended token for error/warning states */
+    --error: hsl(348, 55%, 60%);
+
+    /* Overlay semi-transparent background */
+    --background-overlay: hsla(0, 0%, 15%, 0.9);
+
+    /* Typography */
+    --font-family: "Courier New", "JetBrains Mono", "Roboto Mono", "Source Code Pro", monospace;
+    --font-size-xs:   12px;
+    --font-size-sm:   14px;
+    --font-size-base: 16px;
+    --font-size-md:   18px;
+    --font-size-lg:   20px;
+
+    /* Spacing */
+    --space-3:  5px;
+    --space-4:  6px;
+    --space-5:  8px;
+    --space-6:  10px;
+    --space-7:  12px;
+    --space-8:  15px;
+    --space-9:  16px;
+    --space-10: 20px;
+    --space-11: 24px;
+    --space-12: 32px;
+    --space-13: 40px;
+
+    /* Border radius */
+    --radius-sm:   6px;
+    --radius-md:   8px;
+    --radius-lg:   10px;
+    --radius-pill: 100px;
+
+    /* Borders */
+    --border-default: 1px solid var(--foreground);
+    --border-accent:  2px solid var(--accent);
+
+    /* Shadows — floating/elevated elements only */
+    --shadow-float: 0 4px 10px rgba(0, 0, 0, 0.2);
+
+    /* Transitions */
+    --transition-base: 0.25s ease;
+}
+
+@keyframes pulsate    { 0% { scale: 1 } 50% { scale: 0.98 } 100% { scale: 1 } }
+@keyframes click-press { 0% { scale: 1 } 50% { scale: 0.95 } 100% { scale: 1 } }
