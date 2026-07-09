@@ -483,14 +483,23 @@ async function handleTimeRangeHeartbeat(domain, tabId, tabUrl) {
     sessions[domain] = session;
     await chrome.storage.local.set({ activeSessions: sessions, timeRangeUsage: updatedUsage });
 
-    // Check if any range is now exhausted and redirect the tab
+    // Check if any range is now exhausted and redirect ALL target site tabs
     const exhausted = checkTimeRangeLimits(timeRanges, updatedUsage, now);
-    if (exhausted.length > 0 && tabId && tabUrl) {
+    if (exhausted.length > 0) {
         const rangeId = exhausted[0].id;
-        const promptUrl = chrome.runtime.getURL(
-            `prompt.html?url=${encodeURIComponent(tabUrl)}&msg=TIME_RANGE&rangeId=${encodeURIComponent(rangeId)}`
-        );
-        chrome.tabs.update(tabId, { url: promptUrl });
+        const targetSites = data.targetSites || DEFAULT_TARGETS;
+        const tabs = await chrome.tabs.query({});
+        tabs.forEach(tab => {
+            try {
+                const tabDomain = getDomain(tab.url);
+                if (tabDomain && targetSites.includes(tabDomain)) {
+                    const promptUrl = chrome.runtime.getURL(
+                        `prompt.html?url=${encodeURIComponent(tab.url)}&msg=TIME_RANGE&rangeId=${encodeURIComponent(rangeId)}`
+                    );
+                    chrome.tabs.update(tab.id, { url: promptUrl });
+                }
+            } catch(e) {}
+        });
         return;
     }
 
