@@ -25,7 +25,53 @@ document.getElementById('target-site-display').textContent = `Accessing: ${hostn
 // Main Logic: Check status immediately
 init();
 
+function formatTimeLocal(hour, minute) {
+    const period = hour >= 12 ? 'PM' : 'AM';
+    const h = hour % 12 || 12;
+    return `${h}:${String(minute).padStart(2, '0')} ${period}`;
+}
+
+async function showTimeRangeBlockUI(rangeId) {
+    const data = await chrome.storage.local.get({ timeRanges: [] });
+    const range = data.timeRanges.find(r => r.id === rangeId);
+
+    let detailHtml;
+    if (range) {
+        const startStr = formatTimeLocal(range.startHour, range.startMinute);
+        const endStr = formatTimeLocal(range.endHour, range.endMinute);
+        const isOvernight = (range.endHour * 60 + range.endMinute) <= (range.startHour * 60 + range.startMinute);
+        detailHtml = `
+            <div class="time-range-block-info">
+                <p><strong>${startStr} – ${endStr}${isOvernight ? ' (overnight)' : ''}</strong></p>
+                <p>${range.limitMinutes}-minute limit used up</p>
+                <p class="small-text">All target sites are blocked for this time window.</p>
+                <p class="small-text">Access resumes after ${endStr}.</p>
+            </div>`;
+    } else {
+        detailHtml = `
+            <div class="time-range-block-info">
+                <p>A time range limit has been reached.</p>
+                <p class="small-text">All target sites are blocked until the time window ends.</p>
+            </div>`;
+    }
+
+    document.body.innerHTML = `
+        <div class="container">
+            <h1 class="time-range-block-title">Time Range Limit Reached</h1>
+            <p id="target-site-display">You are trying to access ${hostname}</p>
+            ${detailHtml}
+        </div>
+    ` + '<link rel="stylesheet" href="prompt.css">';
+}
+
 async function init() {
+    // Handle time range block before any other UI
+    if (msgVal === 'TIME_RANGE') {
+        const rangeId = params.get('rangeId');
+        await showTimeRangeBlockUI(rangeId);
+        return;
+    }
+
     const data = await chrome.storage.local.get(['cooldowns', 'inputDelay', 'extensionDuration']);
     // Normalize domain to match storage key
     const domain = intendedUrl ? getDomain(intendedUrl) : (hostname !== 'Unknown' ? getDomain('http://' + hostname) : null);

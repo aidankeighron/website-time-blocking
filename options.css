@@ -128,3 +128,67 @@ li {
     text-align: center;
     margin-top: var(--space-11);
 }
+
+/* Modal overlay */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.75);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+}
+
+.modal-box {
+    background: var(--background);
+    border: var(--border-accent);
+    border-radius: var(--radius-lg);
+    padding: var(--space-12);
+    width: 88%;
+}
+
+.modal-box h2 {
+    border-bottom: 1px solid var(--alt-background-neutral);
+    padding-bottom: var(--space-5);
+    margin-bottom: var(--space-10);
+}
+
+.modal-actions {
+    display: flex;
+    gap: var(--space-6);
+    margin-top: var(--space-10);
+}
+
+.btn-secondary {
+    background-color: var(--alt-background-neutral);
+}
+
+input[type="time"] {
+    background-color: var(--alt-background-neutral);
+    border: 1px solid transparent;
+    color: var(--foreground);
+    padding: var(--space-6);
+    border-radius: var(--radius-md);
+    font-family: var(--font-family);
+    font-size: var(--font-size-base);
+    outline: none;
+    color-scheme: dark;
+    width: 130px;
+}
+
+input[type="time"]:focus {
+    border: var(--border-accent);
+}
+
+/* Time range list items */
+.time-range-item {
+    background-color: var(--alt-background-neutral);
+    margin-bottom: var(--space-5);
+    padding: var(--space-6) var(--space-8);
+    border-radius: var(--radius-md);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: var(--font-size-sm);
+}

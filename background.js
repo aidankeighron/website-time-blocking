@@ -6,6 +6,72 @@
 const DEFAULT_TARGETS = ['instagram.com', 'reddit.com', 'youtube.com'];
 const processingTabs = new Set(); // FIX: Set to track tabs currently being processed
 
+// --- Time Range Helpers ---
+
+function isRangeActive(range, now = Date.now()) {
+    const d = new Date(now);
+    const cur = d.getHours() * 60 + d.getMinutes();
+    const s = range.startHour * 60 + range.startMinute;
+    const e = range.endHour * 60 + range.endMinute;
+    return e > s ? (cur >= s && cur < e) : (cur >= s || cur < e);
+}
+
+function getRangeDateKey(range, now = Date.now()) {
+    const d = new Date(now);
+    const cur = d.getHours() * 60 + d.getMinutes();
+    const s = range.startHour * 60 + range.startMinute;
+    const e = range.endHour * 60 + range.endMinute;
+    const isOvernight = e <= s;
+    const base = (isOvernight && cur < s) ? new Date(now - 86400000) : d;
+    return `${base.getFullYear()}-${String(base.getMonth()+1).padStart(2,'0')}-${String(base.getDate()).padStart(2,'0')}`;
+}
+
+function getActiveRangeIds(timeRanges, now = Date.now()) {
+    return timeRanges.filter(r => isRangeActive(r, now)).map(r => r.id);
+}
+
+function accumulateUsage(elapsedSeconds, activeRangeIds, timeRangeUsage, timeRanges, now = Date.now()) {
+    const updated = { ...timeRangeUsage };
+    for (const id of activeRangeIds) {
+        const range = timeRanges.find(r => r.id === id);
+        if (!range) continue;
+        const dateKey = getRangeDateKey(range, now);
+        const prev = updated[id] || { dateKey: null, usedSeconds: 0 };
+        updated[id] = {
+            dateKey,
+            usedSeconds: (prev.dateKey === dateKey ? prev.usedSeconds : 0) + elapsedSeconds
+        };
+    }
+    return updated;
+}
+
+function checkTimeRangeLimits(timeRanges, timeRangeUsage, now = Date.now()) {
+    return timeRanges.filter(range => {
+        if (!isRangeActive(range, now)) return false;
+        const dateKey = getRangeDateKey(range, now);
+        const usage = timeRangeUsage[range.id];
+        const used = (usage && usage.dateKey === dateKey) ? usage.usedSeconds : 0;
+        return used >= range.limitMinutes * 60;
+    });
+}
+
+// Accumulates elapsed time from a session into time range usage and saves to storage.
+// Returns updated timeRangeUsage object, or null if nothing was accumulated.
+async function saveTimeRangeAccumulation(domain, session, sessions, timeRanges, timeRangeUsage, now) {
+    if (!timeRanges.length || !session.timeRangeLastCheck) return null;
+    const elapsed = (now - session.timeRangeLastCheck) / 1000;
+    if (elapsed <= 0 || elapsed > 300) return null;
+    const activeIds = getActiveRangeIds(timeRanges, now);
+    if (!activeIds.length) return null;
+    const updated = accumulateUsage(elapsed, activeIds, timeRangeUsage, timeRanges, now);
+    session.timeRangeLastCheck = now;
+    sessions[domain] = session;
+    await chrome.storage.local.set({ activeSessions: sessions, timeRangeUsage: updated });
+    return updated;
+}
+
+// --- End Time Range Helpers ---
+
 // Helper to get domain
 function getDomain(url) {
     try {
@@ -58,12 +124,25 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
 async function checkAccess(tabId, url, domain) {
     // Fetch all session state
-    const data = await chrome.storage.local.get(['activeSessions', 'cooldowns', 'countCooldown', 'durationCooldown']);
+    const data = await chrome.storage.local.get(['activeSessions', 'cooldowns', 'countCooldown', 'durationCooldown', 'timeRanges', 'timeRangeUsage']);
     const sessions = data.activeSessions || {};
     const cooldowns = data.cooldowns || {};
-    
+    const timeRanges = data.timeRanges || [];
+
     const now = Date.now();
-    
+
+    // 0. Check time range limits (highest priority — blocks even active sessions)
+    if (timeRanges.length > 0) {
+        const exhausted = checkTimeRangeLimits(timeRanges, data.timeRangeUsage || {}, now);
+        if (exhausted.length > 0) {
+            const promptUrl = chrome.runtime.getURL(
+                `prompt.html?url=${encodeURIComponent(url)}&msg=TIME_RANGE&rangeId=${encodeURIComponent(exhausted[0].id)}`
+            );
+            chrome.tabs.update(tabId, { url: promptUrl });
+            return;
+        }
+    }
+
     // 1. Check Active Session (Priority over Cooldown for Unlimited)
     if (sessions[domain]) {
         const session = sessions[domain];
@@ -89,6 +168,7 @@ async function checkAccess(tabId, url, domain) {
                 chrome.tabs.update(tabId, { url: promptUrl });
                 return;
             }
+            await saveTimeRangeAccumulation(domain, session, sessions, timeRanges, data.timeRangeUsage || {}, now);
             return; // Allow access
 
         } else if (session.type === 'count') {
@@ -175,9 +255,11 @@ async function checkAccess(tabId, url, domain) {
                  }
             }
 
+            await saveTimeRangeAccumulation(domain, session, sessions, timeRanges, data.timeRangeUsage || {}, now);
             return; // Allow access
         } else if (session.type === 'single_url') {
             if (checkSingleUrlMatch(url, session.targetUrl)) {
+                 await saveTimeRangeAccumulation(domain, session, sessions, timeRanges, data.timeRangeUsage || {}, now);
                  return; // Allow access
             } else {
                  // Navigated away. End this single_url session.
@@ -281,12 +363,12 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         // Get active tabs for this domain and redirect them.
         const tabs = await chrome.tabs.query({});
         const data = await chrome.storage.local.get(['activeSessions']);
-        
+
         // Verify session is still active and duration type
         if (data.activeSessions && data.activeSessions[domain] && data.activeSessions[domain].type === 'duration') {
              const session = data.activeSessions[domain];
              await endSessionAndStartCooldown(domain, 'duration', session.endTime);
-             
+
              // Redirect pages immediately
              tabs.forEach(tab => {
                  try {
@@ -298,6 +380,26 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
                  } catch(e) {}
              });
         }
+    } else if (alarm.name.startsWith('timerange_')) {
+        const rangeId = alarm.name.replace('timerange_', '');
+        const data = await chrome.storage.local.get(['timeRanges', 'timeRangeUsage', 'targetSites']);
+        const timeRanges = data.timeRanges || [];
+        const exhausted = checkTimeRangeLimits(timeRanges, data.timeRangeUsage || {}, Date.now());
+        if (!exhausted.find(r => r.id === rangeId)) return;
+
+        const targetSites = data.targetSites || DEFAULT_TARGETS;
+        const tabs = await chrome.tabs.query({});
+        tabs.forEach(tab => {
+            try {
+                const domain = getDomain(tab.url);
+                if (domain && targetSites.includes(domain)) {
+                    const promptUrl = chrome.runtime.getURL(
+                        `prompt.html?url=${encodeURIComponent(tab.url)}&msg=TIME_RANGE&rangeId=${encodeURIComponent(rangeId)}`
+                    );
+                    chrome.tabs.update(tab.id, { url: promptUrl });
+                }
+            } catch(e) {}
+        });
     }
 });
 
@@ -307,7 +409,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         startSession(message.url, message.type, message.value).then((success) => {
             sendResponse({ success: success });
         }).catch(err => sendResponse({ success: false, error: err.message }));
-        return true; 
+        return true;
+    } else if (message.action === 'timeRangeHeartbeat') {
+        const tabUrl = message.tabUrl || sender.tab?.url;
+        handleTimeRangeHeartbeat(message.domain, sender.tab?.id, tabUrl)
+            .then(() => sendResponse({}))
+            .catch(() => sendResponse({}));
+        return true;
     }
 });
 
@@ -323,9 +431,10 @@ async function startSession(url, type, value) {
 
     const session = {
         type: type,
-        startTime: Date.now()
+        startTime: Date.now(),
+        timeRangeLastCheck: Date.now()
     };
-    
+
     if (type === 'duration') {
         session.durationMinutes = value;
         session.endTime = Date.now() + (value * 60 * 1000);
@@ -351,4 +460,50 @@ async function startSession(url, type, value) {
     sessions[domain] = session;
     await chrome.storage.local.set({ activeSessions: sessions });
     return true;
+}
+
+async function handleTimeRangeHeartbeat(domain, tabId, tabUrl) {
+    const data = await chrome.storage.local.get(['activeSessions', 'timeRanges', 'timeRangeUsage', 'targetSites']);
+    const timeRanges = data.timeRanges || [];
+    if (!timeRanges.length) return;
+
+    const sessions = data.activeSessions || {};
+    const session = sessions[domain];
+    if (!session) return;
+
+    const now = Date.now();
+    const rawElapsed = (now - (session.timeRangeLastCheck || session.startTime)) / 1000;
+    const elapsed = Math.min(rawElapsed, 120); // cap at 2 min to guard against browser sleep
+
+    const activeIds = getActiveRangeIds(timeRanges, now);
+    if (!activeIds.length) return;
+
+    const updatedUsage = accumulateUsage(elapsed, activeIds, data.timeRangeUsage || {}, timeRanges, now);
+    session.timeRangeLastCheck = now;
+    sessions[domain] = session;
+    await chrome.storage.local.set({ activeSessions: sessions, timeRangeUsage: updatedUsage });
+
+    // Check if any range is now exhausted and redirect the tab
+    const exhausted = checkTimeRangeLimits(timeRanges, updatedUsage, now);
+    if (exhausted.length > 0 && tabId && tabUrl) {
+        const rangeId = exhausted[0].id;
+        const promptUrl = chrome.runtime.getURL(
+            `prompt.html?url=${encodeURIComponent(tabUrl)}&msg=TIME_RANGE&rangeId=${encodeURIComponent(rangeId)}`
+        );
+        chrome.tabs.update(tabId, { url: promptUrl });
+        return;
+    }
+
+    // Set/refresh alarms for non-exhausted active ranges
+    for (const id of activeIds) {
+        const range = timeRanges.find(r => r.id === id);
+        if (!range) continue;
+        const dateKey = getRangeDateKey(range, now);
+        const usage = updatedUsage[id];
+        const used = (usage && usage.dateKey === dateKey) ? usage.usedSeconds : 0;
+        const remaining = range.limitMinutes * 60 - used;
+        if (remaining > 0) {
+            chrome.alarms.create(`timerange_${id}`, { delayInMinutes: remaining / 60 });
+        }
+    }
 }

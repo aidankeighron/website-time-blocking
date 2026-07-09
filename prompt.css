@@ -160,3 +160,20 @@ input[type="number"]:focus {
     text-align: center;
     margin-top: var(--space-11);
 }
+
+/* Time range block screen */
+.time-range-block-title {
+    color: var(--error);
+}
+
+.time-range-block-info {
+    background-color: var(--alt-background-neutral);
+    border-radius: var(--radius-md);
+    padding: var(--space-10);
+    margin-top: var(--space-10);
+    text-align: center;
+}
+
+.time-range-block-info p {
+    margin: var(--space-5) 0;
+}

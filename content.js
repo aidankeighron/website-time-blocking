@@ -132,15 +132,34 @@
     // State to hold current session data
     let currentSession = null;
 
+    let heartbeatInterval = null;
+
+    function startHeartbeat() {
+        if (heartbeatInterval) return;
+        heartbeatInterval = setInterval(() => {
+            if (!currentSession) return;
+            chrome.runtime.sendMessage({ action: 'timeRangeHeartbeat', domain, tabUrl: window.location.href }).catch(() => {});
+        }, 60000);
+    }
+
+    function stopHeartbeat() {
+        if (heartbeatInterval) {
+            clearInterval(heartbeatInterval);
+            heartbeatInterval = null;
+        }
+    }
+
     // Initial Check
     if (data.activeSessions && data.activeSessions[domain]) {
         currentSession = data.activeSessions[domain];
         updateOverlay(currentSession);
-        
+
         // Start lighter timer for duration updates AND heartbeats
         timerInterval = setInterval(() => {
              updateOverlay(currentSession);
         }, 1000); // 1 sec interval as requested
+
+        startHeartbeat();
     }
 
     // Listen for changes
@@ -148,7 +167,7 @@
         if (namespace === 'local' && changes.activeSessions) {
             const newSessions = changes.activeSessions.newValue || {};
             const session = newSessions[domain];
-            
+
             // Just update reference, don't churn timers
             currentSession = session;
 
@@ -159,12 +178,14 @@
                     clearInterval(timerInterval);
                     timerInterval = null;
                 }
+                stopHeartbeat();
             } else {
                  // If timer wasn't running (e.g. startup), start it
                  if (!timerInterval) {
                      updateOverlay(session);
                      timerInterval = setInterval(() => updateOverlay(currentSession), 1000);
-                 } 
+                 }
+                 startHeartbeat();
                  // REMOVED: Immediate updateOverlay(session) here, because if that triggered a write (heartbeat)
                  // it would cause an infinite loop with storage.onChanged.
                  // We rely on the interval to update the display.
