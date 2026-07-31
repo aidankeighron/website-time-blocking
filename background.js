@@ -94,7 +94,7 @@ async function isTargetSite(url) {
 // Core navigation listener
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     // We only care if URL changed or status is loading (initial load) or complete
-    if (!changeInfo.url && changeInfo.status !== 'complete' && changeInfo.status !== 'loading') return;
+    if (!changeInfo.url && changeInfo.status !== 'loading') return;
     
     // If the tab is just loading the prompt, ignore logic to prevent loops
     if (tab.url.startsWith(chrome.runtime.getURL('prompt.html'))) return;

@@ -72,7 +72,7 @@ async function init() {
         return;
     }
 
-    const data = await chrome.storage.local.get(['cooldowns', 'inputDelay', 'extensionDuration']);
+    const data = await chrome.storage.local.get(['cooldowns', 'inputDelay', 'extensionDuration', 'activeSessions']);
     // Normalize domain to match storage key
     const domain = intendedUrl ? getDomain(intendedUrl) : (hostname !== 'Unknown' ? getDomain('http://' + hostname) : null);
     
@@ -112,23 +112,22 @@ async function init() {
 
     const delay = data.inputDelay || 0;
 
-    // Check if we already have an active session for this domain
-    // If we do, and it's still valid, redirect immediately (handles 'back' button into prompt)
+    // Check if we already have an active session for this domain.
+    // If we do, redirect immediately (handles 'back' button and any spurious re-redirects).
     if (data.activeSessions && data.activeSessions[domain]) {
         const session = data.activeSessions[domain];
         const now = Date.now();
         if (session.type === 'duration' && session.endTime > now) {
             window.location.replace(intendedUrl);
             return;
-        } 
-        else if (session.type === 'count' && (!session.cooldownEndTime || session.cooldownEndTime < now)) {
-            // For count, if not in cooldown, it's technically 'active'
-            // However, the background script manages the limit. 
-            // If the user backed into here, we should probably let them through if they haven't hit the limit.
+        } else if (session.type === 'count' && (!session.cooldownEndTime || session.cooldownEndTime < now)) {
             if ((session.videosWatched || 0) < session.targetCount) {
                 window.location.replace(intendedUrl);
                 return;
             }
+        } else if (session.type === 'single_url') {
+            window.location.replace(intendedUrl);
+            return;
         }
     }
 
