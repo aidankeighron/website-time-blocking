@@ -201,7 +201,7 @@ async function launchFirefox(workerIndex) {
     // __testPromptBase is set in storage. The content script still runs here (matches
     // <all_urls>) and provides __extBridge so prompt.js can reach extension APIs.
     await context.route(
-        url => url.startsWith(TEST_PROMPT_BASE),
+        url => url.href.startsWith(TEST_PROMPT_BASE),
         async (route) => {
             const u = new URL(route.request().url());
             const file = u.pathname === '/' ? 'prompt.html' : u.pathname.slice(1);

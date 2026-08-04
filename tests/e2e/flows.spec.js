@@ -175,7 +175,7 @@ test('Prompt: submitting empty duration shows error message', async ({ page }) =
     await page.click('#confirm-btn');
     await expect(page.locator('#error-msg')).toContainText('valid positive duration');
     // Still on prompt — did not navigate away
-    expect(page.url()).toContain('prompt.html');
+    expect(page.url()).toMatch(/prompt\.html|playwright-ext-prompt\.invalid/);
 });
 
 test('Prompt: submitting zero duration shows error', async ({ page }) => {
@@ -210,11 +210,15 @@ test('Custom targetSites: only configured domains are blocked', async ({ page, s
 
 // ── Prompt page itself is never blocked ───────────────────────────────────────
 
-test('Extension prompt.html does not trigger another redirect', async ({ page, extCtx }) => {
-    // Navigate directly to prompt.html — should NOT be redirected again
-    const promptUrl = `${extCtx.extensionUrl}/prompt.html?url=${encodeURIComponent(YT_HOME)}`;
+test('Extension prompt.html does not trigger another redirect', async ({ page, extCtx, browserName }) => {
+    // On Firefox, Playwright's Juggler can't navigate to moz-extension:// via page.goto.
+    // Use the test redirect URL (playwright-ext-prompt.invalid) which serves the same
+    // prompt.html content and is routable. The extension won't re-block it (not a target site).
+    const promptUrl = browserName === 'firefox'
+        ? `https://playwright-ext-prompt.invalid/?url=${encodeURIComponent(YT_HOME)}`
+        : `${extCtx.extensionUrl}/prompt.html?url=${encodeURIComponent(YT_HOME)}`;
     await page.goto(promptUrl, { waitUntil: 'domcontentloaded' });
-    // Should stay on prompt.html (not redirect to another prompt.html)
-    expect(page.url()).toContain('prompt.html');
+    // Should stay on the prompt page — no further redirect
+    expect(page.url()).toMatch(/prompt\.html|playwright-ext-prompt\.invalid/);
     await expect(page.locator('h1')).toContainText('Intervention');
 });

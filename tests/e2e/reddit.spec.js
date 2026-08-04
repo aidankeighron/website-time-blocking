@@ -204,7 +204,7 @@ test('Reddit: Finish button starts single_url session for the post', async ({ pa
     await expectBlocked(page, POST_A);
     await expect(page.locator('#finish-btn')).toBeEnabled({ timeout: 3000 });
     await Promise.all([
-        page.waitForURL(/reddit\.com/, { timeout: 10000 }),
+        page.waitForURL(/^https:\/\/(www\.)?reddit\.com\//, { timeout: 10000 }),
         page.click('#finish-btn'),
     ]);
     expect(page.url()).not.toContain('prompt.html');
