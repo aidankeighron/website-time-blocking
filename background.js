@@ -4,7 +4,8 @@
 // We use chrome.storage.local for persistence.
 
 const DEFAULT_TARGETS = ['instagram.com', 'reddit.com', 'youtube.com'];
-const processingTabs = new Set(); // FIX: Set to track tabs currently being processed
+const processingTabs = new Set(); // Tracks tabs currently being processed (short-lived lock)
+const pendingPromptTabs = new Set(); // Tracks tabs redirected to prompt.html, waiting for session start
 
 // --- Time Range Helpers ---
 
@@ -82,6 +83,25 @@ function getDomain(url) {
     }
 }
 
+// Redirect a tab to the prompt page and mark it as pending so duplicate events are ignored.
+// In Firefox E2E tests, background.js can't redirect to moz-extension:// because Playwright's
+// Juggler protocol drops the page when it encounters that scheme. If the storage key
+// __testPromptBase is set (by the test fixture), redirect there instead so Playwright can
+// observe the navigation normally.
+function redirectToPrompt(tabId, promptUrl) {
+    pendingPromptTabs.add(tabId);
+    chrome.storage.local.get('__testPromptBase').then(data => {
+        let finalUrl = promptUrl;
+        if (data.__testPromptBase) {
+            try {
+                const u = new URL(promptUrl);
+                finalUrl = data.__testPromptBase + u.search;
+            } catch {}
+        }
+        chrome.tabs.update(tabId, { url: finalUrl });
+    });
+}
+
 // Check if url matches target
 async function isTargetSite(url) {
     const domain = getDomain(url);
@@ -93,32 +113,62 @@ async function isTargetSite(url) {
 
 // Core navigation listener
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-    // We only care if URL changed or status is loading (initial load) or complete
-    if (!changeInfo.url && changeInfo.status !== 'loading') return;
-    
-    // If the tab is just loading the prompt, ignore logic to prevent loops
-    if (tab.url.startsWith(chrome.runtime.getURL('prompt.html'))) return;
-    
-    // FIX: Check if we are already processing this tab to prevent race conditions
+    if (!changeInfo.url && changeInfo.status !== 'complete' && changeInfo.status !== 'loading') return;
+
+    // Prefer changeInfo.url (the actual new destination) over tab.url, which can be stale
+    // when status events fire after a redirect has already been issued.
+    const currentUrl = changeInfo.url || tab.url;
+
+    // If the tab is heading to or already at the prompt, leave pendingPromptTabs intact and stop.
+    if (currentUrl.startsWith(chrome.runtime.getURL('prompt.html'))) return;
+
+    if (pendingPromptTabs.has(tabId)) {
+        if (changeInfo.url) {
+            // A fresh URL navigation away from the prompt — clear pending state and process normally.
+            pendingPromptTabs.delete(tabId);
+        } else {
+            // Stale status (loading/complete) event for a tab still waiting at the prompt — skip.
+            return;
+        }
+    }
+
     if (processingTabs.has(tabId)) return;
 
-    const domain = getDomain(tab.url);
+    const domain = getDomain(currentUrl);
     if (!domain) return;
-    
-    // FIX: Lock the tab
+
     processingTabs.add(tabId);
 
     try {
-        if (await isTargetSite(tab.url)) {
-            await checkAccess(tabId, tab.url, domain);
+        if (await isTargetSite(currentUrl)) {
+            await checkAccess(tabId, currentUrl, domain);
         }
     } finally {
-        // FIX: Release the lock after a short delay (1000ms).
-        // This ensures the redirect has time to take effect before we listen again,
-        // effectively debouncing the event stream.
         setTimeout(() => {
             processingTabs.delete(tabId);
         }, 1000);
+    }
+});
+
+// Supplementary navigation listener for environments where tabs.onUpdated fires unreliably
+// for certain navigation types (e.g. Playwright's Juggler protocol in Firefox).
+chrome.webNavigation.onCommitted.addListener(async ({ tabId, url, frameId }) => {
+    if (frameId !== 0) return;
+    if (!url) return;
+    if (url.startsWith('chrome-extension://') || url.startsWith('moz-extension://')) return;
+    if (pendingPromptTabs.has(tabId)) return;
+    if (processingTabs.has(tabId)) return;
+
+    const domain = getDomain(url);
+    if (!domain) return;
+
+    processingTabs.add(tabId);
+    try {
+        if (await isTargetSite(url)) {
+            await checkAccess(tabId, url, domain);
+        }
+    } finally {
+        setTimeout(() => { processingTabs.delete(tabId); }, 1000);
     }
 });
 
@@ -138,7 +188,7 @@ async function checkAccess(tabId, url, domain) {
             const promptUrl = chrome.runtime.getURL(
                 `prompt.html?url=${encodeURIComponent(url)}&msg=TIME_RANGE&rangeId=${encodeURIComponent(exhausted[0].id)}`
             );
-            chrome.tabs.update(tabId, { url: promptUrl });
+            redirectToPrompt(tabId, promptUrl);
             return;
         }
     }
@@ -159,13 +209,13 @@ async function checkAccess(tabId, url, domain) {
                  await chrome.storage.local.set({ activeSessions: sessions });
                  
                  const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
-                 chrome.tabs.update(tabId, { url: promptUrl });
+                 redirectToPrompt(tabId, promptUrl);
                  return;
             } else if (now > endTime) {
                 // Expired -> Start Cooldown (Backdated to actual end time) -> Redirect
                 await endSessionAndStartCooldown(domain, 'duration', endTime);
                 const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Time%20Up`);
-                chrome.tabs.update(tabId, { url: promptUrl });
+                redirectToPrompt(tabId, promptUrl);
                 return;
             }
             await saveTimeRangeAccumulation(domain, session, sessions, timeRanges, data.timeRangeUsage || {}, now);
@@ -178,7 +228,7 @@ async function checkAccess(tabId, url, domain) {
                  await chrome.storage.local.set({ activeSessions: sessions });
                  
                  const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
-                 chrome.tabs.update(tabId, { url: promptUrl });
+                 redirectToPrompt(tabId, promptUrl);
                  return;
             }
 
@@ -187,9 +237,9 @@ async function checkAccess(tabId, url, domain) {
                  // Session Expired due to inactivity
                  delete sessions[domain];
                  await chrome.storage.local.set({ activeSessions: sessions });
-                 
+
                  const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
-                 chrome.tabs.update(tabId, { url: promptUrl });
+                 redirectToPrompt(tabId, promptUrl);
                  return;
             }
 
@@ -223,7 +273,7 @@ async function checkAccess(tabId, url, domain) {
                     }
 
                     const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Limit%20Reached`);
-                    chrome.tabs.update(tabId, { url: promptUrl });
+                    redirectToPrompt(tabId, promptUrl);
                     return;
                 } else {
                      // Add to whitelist
@@ -267,7 +317,7 @@ async function checkAccess(tabId, url, domain) {
                  await chrome.storage.local.set({ activeSessions: sessions });
                  
                  const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Finished`);
-                 chrome.tabs.update(tabId, { url: promptUrl });
+                 redirectToPrompt(tabId, promptUrl);
                  return;
             }
         }
@@ -281,7 +331,7 @@ async function checkAccess(tabId, url, domain) {
         if (endTime > now) {
             const minutesLeft = Math.ceil((endTime - now) / 60000);
             const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&cooldown=${minutesLeft}`);
-            chrome.tabs.update(tabId, { url: promptUrl });
+            redirectToPrompt(tabId, promptUrl);
             return;
         } else {
             // Expired, clean up
@@ -292,7 +342,7 @@ async function checkAccess(tabId, url, domain) {
     
     // 3. No Session & No Cooldown -> Redirect to Prompt to Start
     const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}`);
-    chrome.tabs.update(tabId, { url: promptUrl });
+    redirectToPrompt(tabId, promptUrl);
 }
 
 function checkSingleUrlMatch(currentUrl, targetUrl) {
@@ -372,10 +422,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
              // Redirect pages immediately
              tabs.forEach(tab => {
                  try {
-                     const url = new URL(tab.url);
                      if (getDomain(tab.url) === domain) {
                           const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(tab.url)}&msg=Time%20Up`);
-                          chrome.tabs.update(tab.id, { url: promptUrl });
+                          redirectToPrompt(tab.id, promptUrl);
                      }
                  } catch(e) {}
              });
@@ -396,7 +445,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
                     const promptUrl = chrome.runtime.getURL(
                         `prompt.html?url=${encodeURIComponent(tab.url)}&msg=TIME_RANGE&rangeId=${encodeURIComponent(rangeId)}`
                     );
-                    chrome.tabs.update(tab.id, { url: promptUrl });
+                    redirectToPrompt(tab.id, promptUrl);
                 }
             } catch(e) {}
         });
@@ -404,6 +453,11 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 });
 
 // Handle Messages from Prompt or Content Script
+chrome.tabs.onRemoved.addListener((tabId) => {
+    pendingPromptTabs.delete(tabId);
+    processingTabs.delete(tabId);
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'startSession') {
         startSession(message.url, message.type, message.value).then((success) => {
@@ -496,7 +550,7 @@ async function handleTimeRangeHeartbeat(domain, tabId, tabUrl) {
                     const promptUrl = chrome.runtime.getURL(
                         `prompt.html?url=${encodeURIComponent(tab.url)}&msg=TIME_RANGE&rangeId=${encodeURIComponent(rangeId)}`
                     );
-                    chrome.tabs.update(tab.id, { url: promptUrl });
+                    redirectToPrompt(tab.id, promptUrl);
                 }
             } catch(e) {}
         });

@@ -194,3 +194,29 @@
     });
 
 })();
+
+// Test-only storage bridge for Firefox E2E tests.
+// Firefox content scripts run in an XRay-wrapped isolated world. exportFunction() exposes
+// a privileged function to the page's JS scope, but returning a privileged Promise from
+// it triggers a "Permission denied to access .then" Xray error. Workaround: use a
+// callback parameter — the page passes its own (page-context) resolve function and the
+// content script calls it with a plain JSON string, which auto-clones across worlds.
+// No-op in Chrome (exportFunction is undefined there).
+if (typeof exportFunction !== 'undefined') {
+    const store = (typeof browser !== 'undefined' && browser.storage) ? browser.storage.local : chrome.storage.local;
+    exportFunction((op, dataStr, callback) => {
+        const data = dataStr === null ? null : JSON.parse(dataStr);
+        let p;
+        if (op === 'set') p = store.set(data).then(() => '{}');
+        else if (op === 'get') p = store.get(data).then(r => JSON.stringify(r));
+        // chrome.alarms is not available in content scripts — alarm clearing is done
+        // by the fixture via a background-script message after storage is cleared.
+        else if (op === 'clear') p = store.clear().then(() => '{}');
+        else if (op === 'sendMessage') {
+            const rt = (typeof browser !== 'undefined' && browser.runtime) ? browser.runtime : chrome.runtime;
+            p = rt.sendMessage(data).then(r => JSON.stringify(r));
+        }
+        else p = Promise.resolve('{"error":"unknown op"}');
+        p.then(r => callback(r)).catch(() => callback('{"error":"store failed"}'));
+    }, window, { defineAs: '__extBridge' });
+}

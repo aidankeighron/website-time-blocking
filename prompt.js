@@ -1,5 +1,31 @@
 // Parse query parameters
 const params = new URLSearchParams(window.location.search);
+
+// When the extension redirects to a test-helper URL (https://playwright-ext-prompt.invalid/)
+// instead of the real moz-extension:// page, chrome.storage.local and chrome.runtime are
+// unavailable in the page context. Use the __extBridge exported by the content script instead.
+// On real extension pages (_isExtPage), the normal extension APIs are used directly.
+const _isExtPage = location.protocol === 'chrome-extension:' || location.protocol === 'moz-extension:';
+
+function _storageGet(keys) {
+    if (_isExtPage) return chrome.storage.local.get(keys);
+    return new Promise(resolve => {
+        (function poll() {
+            if (window.__extBridge) return window.__extBridge('get', JSON.stringify(keys), r => resolve(JSON.parse(r)));
+            setTimeout(poll, 50);
+        })();
+    });
+}
+
+function _sendMessage(msg) {
+    if (_isExtPage) return new Promise(resolve => chrome.runtime.sendMessage(msg, resolve));
+    return new Promise(resolve => {
+        (function poll() {
+            if (window.__extBridge) return window.__extBridge('sendMessage', JSON.stringify(msg), r => resolve(JSON.parse(r)));
+            setTimeout(poll, 50);
+        })();
+    });
+}
 const intendedUrl = params.get('url');
 const cooldownVal = params.get('cooldown');
 const msgVal = params.get('msg');
@@ -32,7 +58,7 @@ function formatTimeLocal(hour, minute) {
 }
 
 async function showTimeRangeBlockUI(rangeId) {
-    const data = await chrome.storage.local.get({ timeRanges: [] });
+    const data = await _storageGet({ timeRanges: [] });
     const range = data.timeRanges.find(r => r.id === rangeId);
 
     let detailHtml;
@@ -72,7 +98,7 @@ async function init() {
         return;
     }
 
-    const data = await chrome.storage.local.get(['cooldowns', 'inputDelay', 'extensionDuration', 'activeSessions']);
+    const data = await _storageGet(['cooldowns', 'inputDelay', 'extensionDuration', 'activeSessions']);
     // Normalize domain to match storage key
     const domain = intendedUrl ? getDomain(intendedUrl) : (hostname !== 'Unknown' ? getDomain('http://' + hostname) : null);
     
@@ -315,16 +341,16 @@ function handleConfirm() {
 }
 
 function startSession(type, value) {
-    chrome.runtime.sendMessage({
+    _sendMessage({
         action: 'startSession',
         url: intendedUrl,
         type: type,
         value: value
-    }, (response) => {
+    }).then(response => {
         if (response && response.success) {
-           window.location.replace(intendedUrl);
+            window.location.replace(intendedUrl);
         } else {
-             document.getElementById('error-msg').textContent = response.error || "Failed to start session.";
+             document.getElementById('error-msg').textContent = (response && response.error) || "Failed to start session.";
         }
     });
 }
