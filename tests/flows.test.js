@@ -1,6 +1,6 @@
 // Cross-site and shared flows: time ranges, pendingPromptTabs, alarms, startSession message.
 const {
-    loadBackground, fireUpdated, fireRemoved, fireAlarm, setStorage,
+    loadBackground, fireUpdated, fireRemoved, fireCommitted, fireAlarm, setStorage,
     expectPromptRedirect, expectNoRedirect, flushPromises, NOW,
 } = require('./helpers');
 
@@ -125,12 +125,15 @@ test('pendingPromptTabs: stale status:complete after redirect does not double-pr
 });
 
 test('pendingPromptTabs: fresh URL navigation away from prompt clears pending state', async () => {
-    // Redirect to prompt
+    // Step 1: navigate to YT — no session → redirect to prompt
     await nav(TAB, YT_HOME);
     expect(__mockFns__['tabs.update'].mock.calls.length).toBe(1);
 
-    // User starts a session — simulate what prompt.js does: sends startSession message,
-    // then calls window.location.replace(intendedUrl) which fires a changeInfo.url event
+    // Step 2: tab commits to prompt.html — this is required before any away-navigation is processed
+    const promptUrl = `chrome-extension://fakeid/prompt.html?url=${encodeURIComponent(YT_HOME)}`;
+    await fireUpdated(TAB, { url: promptUrl }, { url: promptUrl, status: 'loading' });
+
+    // Step 3: user starts a session via the prompt UI
     setStorage({
         activeSessions: {
             'youtube.com': {
@@ -142,11 +145,36 @@ test('pendingPromptTabs: fresh URL navigation away from prompt clears pending st
         },
     });
 
-    // The replace fires a new URL navigation event — should clear pendingPromptTabs
-    // and then isTargetSite check should find an active session → no redirect
+    // Step 4: prompt.js calls window.location.replace(intendedUrl) → tab navigates back to YT
+    // Should clear pending state, find an active session, and allow access (no new redirect)
     await fireUpdated(TAB, { url: YT_HOME }, { url: YT_HOME });
-    // Active session exists → should be allowed (no new redirect)
     expect(__mockFns__['tabs.update'].mock.calls.length).toBe(1);
+});
+
+test('pendingPromptTabs: www-redirect chain does not double-prompt', async () => {
+    // Step 1: navigate to bare domain (no www) — triggers redirect to prompt
+    await nav(TAB, 'https://youtube.com/');
+    expect(__mockFns__['tabs.update'].mock.calls.length).toBe(1);
+
+    // Step 2: browser fires www-redirect BEFORE tab commits to prompt.html
+    // This must be suppressed — tab hasn't reached the prompt page yet
+    await nav(TAB, 'https://www.youtube.com/');
+    expect(__mockFns__['tabs.update'].mock.calls.length).toBe(1); // still only 1
+});
+
+test('pendingPromptTabs: back button without session re-shows prompt', async () => {
+    // Step 1: navigate to YT — no session → redirect to prompt
+    await nav(TAB, YT_HOME);
+    expect(__mockFns__['tabs.update'].mock.calls.length).toBe(1);
+
+    // Step 2: tab commits to prompt.html
+    const promptUrl = `chrome-extension://fakeid/prompt.html?url=${encodeURIComponent(YT_HOME)}`;
+    await fireUpdated(TAB, { url: promptUrl }, { url: promptUrl, status: 'loading' });
+
+    // Step 3: user presses back button without starting a session — tab returns to YT
+    await nav(TAB, YT_HOME);
+    // Should show prompt again — no valid session was started
+    expect(__mockFns__['tabs.update'].mock.calls.length).toBe(2);
 });
 
 test('pendingPromptTabs: tab removed cleans up state', async () => {
