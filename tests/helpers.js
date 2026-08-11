@@ -34,6 +34,12 @@ function fireMessage(message, sender = {}) {
     });
 }
 
+// Fire a webNavigation.onCommitted event.
+async function fireCommitted({ tabId, url, frameId = 0 }) {
+    const handlers = global.__listeners__.onCommitted;
+    await Promise.all(handlers.map(fn => fn({ tabId, url, frameId })));
+}
+
 // Fire an alarm event.
 async function fireAlarm(alarm) {
     const handlers = global.__listeners__.onAlarm;
@@ -85,6 +91,7 @@ module.exports = {
     loadBackground,
     fireUpdated,
     fireRemoved,
+    fireCommitted,
     fireMessage,
     fireAlarm,
     setStorage,

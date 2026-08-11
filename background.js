@@ -6,6 +6,7 @@
 const DEFAULT_TARGETS = ['instagram.com', 'reddit.com', 'youtube.com'];
 const processingTabs = new Set(); // Tracks tabs currently being processed (short-lived lock)
 const pendingPromptTabs = new Set(); // Tracks tabs redirected to prompt.html, waiting for session start
+const tabsCurrentlyAtPrompt = new Set(); // Tracks tabs that have committed to prompt.html
 
 // --- Time Range Helpers ---
 
@@ -119,17 +120,23 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     // when status events fire after a redirect has already been issued.
     const currentUrl = changeInfo.url || tab.url;
 
-    // If the tab is heading to or already at the prompt, leave pendingPromptTabs intact and stop.
-    if (currentUrl.startsWith(chrome.runtime.getURL('prompt.html'))) return;
+    // If the tab has committed to the prompt page, mark it and clear the debounce lock
+    // (the redirect is complete; the lock is no longer needed).
+    if (currentUrl.startsWith(chrome.runtime.getURL('prompt.html'))) {
+        tabsCurrentlyAtPrompt.add(tabId);
+        processingTabs.delete(tabId);
+        return;
+    }
 
-    if (pendingPromptTabs.has(tabId)) {
-        if (changeInfo.url) {
-            // A fresh URL navigation away from the prompt — clear pending state and process normally.
-            pendingPromptTabs.delete(tabId);
-        } else {
-            // Stale status (loading/complete) event for a tab still waiting at the prompt — skip.
-            return;
-        }
+    // If the tab was genuinely at prompt.html and is now navigating away (e.g. after starting a session):
+    if (tabsCurrentlyAtPrompt.has(tabId)) {
+        tabsCurrentlyAtPrompt.delete(tabId);
+        pendingPromptTabs.delete(tabId);
+        // Fall through — process this navigation normally
+    } else if (pendingPromptTabs.has(tabId)) {
+        // Tab was redirected to prompt but hasn't committed there yet — this is a redirect-chain
+        // event (e.g. youtube.com → www.youtube.com) arriving before the tab reaches prompt.html.
+        return;
     }
 
     if (processingTabs.has(tabId)) return;
@@ -455,6 +462,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // Handle Messages from Prompt or Content Script
 chrome.tabs.onRemoved.addListener((tabId) => {
     pendingPromptTabs.delete(tabId);
+    tabsCurrentlyAtPrompt.delete(tabId);
     processingTabs.delete(tabId);
 });
 

@@ -2,7 +2,7 @@
 // Test files access storage via global.__store__ and listeners via global.__listeners__.
 
 const store = {};
-const listeners = { onUpdated: [], onAlarm: [], onMessage: [], onRemoved: [] };
+const listeners = { onUpdated: [], onAlarm: [], onMessage: [], onRemoved: [], onCommitted: [] };
 const mockFns = {};
 
 function makeMockFn(key) {
@@ -73,5 +73,8 @@ global.chrome = {
     alarms: {
         onAlarm: { addListener: (fn) => listeners.onAlarm.push(fn) },
         create: (...args) => mockFns['alarms.create'](...args),
+    },
+    webNavigation: {
+        onCommitted: { addListener: (fn) => listeners.onCommitted.push(fn) },
     },
 };
