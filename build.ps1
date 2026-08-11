@@ -8,12 +8,12 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $projectDir = $PSScriptRoot
 $parentDir  = Split-Path $projectDir -Parent
-$version    = (Get-Content "$projectDir\manifest.json" | ConvertFrom-Json).version
+$version    = (Get-Content (Join-Path $projectDir 'manifest.json') | ConvertFrom-Json).version
 
-$chromeZip  = "$parentDir\wtb-chrome-v$version.zip"
-$firefoxZip = "$projectDir\wtb-firefox-v$version.zip"
+$chromeZip  = Join-Path $parentDir "wtb-chrome-v$version.zip"
+$firefoxZip = Join-Path $projectDir "wtb-firefox-v$version.zip"
 
-$excludeDirs = @('node_modules', '.git', 'playwright-report', 'test-results', 'tests', '.claude')
+$excludeDirs = @('node_modules', '.git', 'playwright-report', 'test-results', 'tests', '.claude', '.github')
 
 function Get-ExtFiles($sourceDir) {
     Get-ChildItem -Path $sourceDir -Recurse -File | Where-Object {
@@ -50,14 +50,14 @@ function Write-Zip($zipPath, $files, $sourceDir, $entryPrefix) {
 Write-Host "Building Chrome zip (v$version)..."
 if (Test-Path $chromeZip) { Remove-Item $chromeZip -Force }
 
-$tmpChromeRoot = "$env:TEMP\wtb-chrome-build"
-$tmpChrome     = "$tmpChromeRoot\website-time-blocking"
+$tmpChromeRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'wtb-chrome-build'
+$tmpChrome     = Join-Path $tmpChromeRoot 'website-time-blocking'
 if (Test-Path $tmpChromeRoot) { Remove-Item $tmpChromeRoot -Recurse -Force }
 New-Item -ItemType Directory -Path $tmpChrome -Force | Out-Null
 
 foreach ($f in (Get-ExtFiles $projectDir)) {
     $rel  = $f.FullName.Substring($projectDir.Length).TrimStart('\','/')
-    $dest = "$tmpChrome\$rel"
+    $dest = Join-Path $tmpChrome $rel
     New-Item -ItemType Directory -Path (Split-Path $dest) -Force | Out-Null
     Copy-Item $f.FullName $dest
 }
@@ -71,20 +71,20 @@ Write-Host "  -> $chromeZip"
 Write-Host "Building Firefox zip (v$version)..."
 if (Test-Path $firefoxZip) { Remove-Item $firefoxZip -Force }
 
-$tmpFirefox = "$env:TEMP\wtb-firefox-build"
+$tmpFirefox = Join-Path ([System.IO.Path]::GetTempPath()) 'wtb-firefox-build'
 if (Test-Path $tmpFirefox) { Remove-Item $tmpFirefox -Recurse -Force }
 New-Item -ItemType Directory -Path $tmpFirefox -Force | Out-Null
 
 foreach ($f in (Get-ExtFiles $projectDir)) {
     $rel = $f.FullName.Substring($projectDir.Length).TrimStart('\','/')
     if ($rel -eq 'manifest.json') { continue }   # drop Chrome manifest
-    $dest = "$tmpFirefox\$rel"
+    $dest = Join-Path $tmpFirefox $rel
     New-Item -ItemType Directory -Path (Split-Path $dest) -Force | Out-Null
     Copy-Item $f.FullName $dest
 }
 
 # Promote Firefox manifest
-Rename-Item "$tmpFirefox\manifest-firefox.json" 'manifest.json'
+Rename-Item (Join-Path $tmpFirefox 'manifest-firefox.json') 'manifest.json'
 
 # No prefix — files sit at zip root
 Write-Zip -zipPath $firefoxZip -files (Get-ChildItem $tmpFirefox -Recurse -File) -sourceDir $tmpFirefox -entryPrefix ''
