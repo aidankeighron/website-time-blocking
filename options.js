@@ -5,11 +5,11 @@ document.getElementById('add-time-range-btn').addEventListener('click', openTime
 document.getElementById('tr-save-btn').addEventListener('click', saveTimeRange);
 document.getElementById('tr-cancel-btn').addEventListener('click', closeTimeRangeModal);
 
-// Time pickers: open picker on any click, block keyboard input
+// Time pickers: try to open native picker on click; do NOT block keyboard so
+// PC users can type the time directly (Firefox desktop needs this fallback).
 ['tr-start', 'tr-end'].forEach(id => {
     const el = document.getElementById(id);
-    el.addEventListener('click', () => el.showPicker());
-    el.addEventListener('keydown', e => e.preventDefault());
+    el.addEventListener('click', () => { try { el.showPicker(); } catch (_) {} });
 });
 
 function getDomain(url) {
