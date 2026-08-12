@@ -23,7 +23,7 @@
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
-      "css": ["tokens.css", "overlay.css"],
+      "css": ["overlay.css"],
       "run_at": "document_end"
     }
   ],

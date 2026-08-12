@@ -1,25 +1,39 @@
+/* CSS variables scoped to the overlay element — keeps extension styles from leaking into the host page. */
 #website-time-blocking-overlay {
+    --wtb-foreground:             hsl(0, 0%, 100%);
+    --wtb-background:             hsl(0, 0%, 15%);
+    --wtb-accent:                 hsl(280, 75%, 50%);
+    --wtb-alt-background-neutral: hsl(0, 0%, 30%);
+    --wtb-error:                  hsl(348, 55%, 60%);
+    --wtb-font-family:            "Courier New", "JetBrains Mono", "Roboto Mono", "Source Code Pro", monospace;
+    --wtb-font-size-sm:           14px;
+    --wtb-space-3:                5px;
+    --wtb-space-5:                8px;
+    --wtb-space-7:                12px;
+    --wtb-radius-md:              8px;
+    --wtb-shadow-float:           0 4px 10px rgba(0, 0, 0, 0.2);
+
     position: fixed;
     top: calc(10px + env(safe-area-inset-top, 0px));
     left: calc(10px + env(safe-area-inset-top, 0px));
-    background-color: var(--background);
-    color: var(--accent);
-    padding: var(--space-5) var(--space-7);
-    border-radius: var(--radius-md);
-    font-family: var(--font-family);
-    font-size: var(--font-size-sm);
+    background-color: var(--wtb-background);
+    color: var(--wtb-accent);
+    padding: var(--wtb-space-5) var(--wtb-space-7);
+    border-radius: var(--wtb-radius-md);
+    font-family: var(--wtb-font-family);
+    font-size: var(--wtb-font-size-sm);
     font-weight: 700;
     z-index: 2147483647;
-    box-shadow: var(--shadow-float);
-    border: 1px solid var(--alt-background-neutral);
+    box-shadow: var(--wtb-shadow-float);
+    border: 1px solid var(--wtb-alt-background-neutral);
     pointer-events: none;
     user-select: none;
     display: flex;
     align-items: center;
-    gap: var(--space-3);
+    gap: var(--wtb-space-3);
 }
 
-#website-time-blocking-overlay.warning {
-    color: var(--error);
-    border-color: var(--error);
+#website-time-blocking-overlay.wtb-warning {
+    color: var(--wtb-error);
+    border-color: var(--wtb-error);
 }

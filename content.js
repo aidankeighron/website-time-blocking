@@ -88,7 +88,7 @@
             const timeLeft = session.endTime - Date.now();
             if (timeLeft <= 0) {
                  overlay.textContent = "Time's Up!";
-                 overlay.classList.add('warning');
+                 overlay.classList.add('wtb-warning');
                  // Force reload to trigger background check immediately
                  // Debounce this to avoid spamming reloads if background is slow
                  if (!session.expiredActionTaken) {
@@ -99,7 +99,7 @@
                 const minutes = Math.floor(timeLeft / 60000);
                 const seconds = Math.floor((timeLeft % 60000) / 1000);
                 overlay.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
-                overlay.classList.remove('warning');
+                overlay.classList.remove('wtb-warning');
             }
         } else if (session.type === 'count') {
             if (session.cooldownEndTime) {
@@ -108,24 +108,24 @@
                      // Cooldown over, but technically session is still active until page refresh/check
                      // or until we hit the limit in background
                      overlay.textContent = "Cooldown Complete";
-                     overlay.classList.remove('warning');
+                     overlay.classList.remove('wtb-warning');
                 } else {
                     const minutes = Math.floor(timeLeft / 60000);
                     const seconds = Math.floor((timeLeft % 60000) / 1000);
                     overlay.textContent = `Cooldown: ${minutes}:${seconds.toString().padStart(2, '0')}`;
-                    overlay.classList.add('warning');
+                    overlay.classList.add('wtb-warning');
                 }
             } else {
                 overlay.textContent = `${session.videosWatched || 0} / ${session.targetCount} Videos`;
                  if ((session.videosWatched || 0) >= session.targetCount) {
-                      overlay.classList.add('warning');
+                      overlay.classList.add('wtb-warning');
                  } else {
-                      overlay.classList.remove('warning');
+                      overlay.classList.remove('wtb-warning');
                  }
             }
         } else if (session.type === 'single_url') {
              overlay.textContent = "Finish this post/video";
-             overlay.classList.remove('warning');
+             overlay.classList.remove('wtb-warning');
         }
     }
 
