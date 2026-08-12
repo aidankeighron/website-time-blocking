@@ -192,3 +192,27 @@ input[type="time"]:focus {
     align-items: center;
     font-size: var(--font-size-sm);
 }
+
+/* Day-of-week picker for schedule blocks */
+.day-picker {
+    display: flex;
+    gap: var(--space-6);
+    flex-wrap: wrap;
+    margin-top: var(--space-5);
+}
+
+.day-label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+    user-select: none;
+}
+
+.day-label input[type="checkbox"] {
+    cursor: pointer;
+    accent-color: var(--accent);
+    width: 16px;
+    height: 16px;
+}

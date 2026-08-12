@@ -4,6 +4,9 @@ document.getElementById('save-config').addEventListener('click', saveOptions);
 document.getElementById('add-time-range-btn').addEventListener('click', openTimeRangeModal);
 document.getElementById('tr-save-btn').addEventListener('click', saveTimeRange);
 document.getElementById('tr-cancel-btn').addEventListener('click', closeTimeRangeModal);
+document.getElementById('add-schedule-block-btn').addEventListener('click', openScheduleBlockModal);
+document.getElementById('sb-save-btn').addEventListener('click', saveScheduleBlock);
+document.getElementById('sb-cancel-btn').addEventListener('click', closeScheduleBlockModal);
 
 // Time pickers: try to open native picker on click; do NOT block keyboard so
 // PC users can type the time directly (Firefox desktop needs this fallback).
@@ -32,7 +35,8 @@ function restoreOptions() {
         countCooldown: 30,
         inputDelay: 0,
         extensionDuration: 30,
-        timeRanges: []
+        timeRanges: [],
+        scheduleBlocks: [],
     }, (items) => {
         document.getElementById('duration-cooldown').value = items.durationCooldown;
         document.getElementById('count-cooldown').value = items.countCooldown;
@@ -44,6 +48,7 @@ function restoreOptions() {
         items.targetSites.forEach(site => createSiteElement(site));
 
         renderTimeRangeList(items.timeRanges);
+        renderScheduleBlockList(items.scheduleBlocks);
     });
 }
 
@@ -217,6 +222,114 @@ function saveTimeRange() {
             renderTimeRangeList(updated);
             closeTimeRangeModal();
             showStatus('Time range saved.');
+        });
+    });
+}
+
+// --- Schedule Block Functions ---
+
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function formatScheduleBlockDays(days) {
+    if (!days || days.length === 0) return 'No days';
+    if (days.length === 7) return 'Every day';
+    const sorted = [...days].sort((a, b) => a - b);
+    return sorted.map(d => DAY_NAMES[d]).join(', ');
+}
+
+function renderScheduleBlockList(blocks) {
+    const list = document.getElementById('schedule-block-list');
+    list.innerHTML = '';
+    if (!blocks || blocks.length === 0) return;
+    blocks.forEach(block => {
+        const li = document.createElement('li');
+        li.className = 'time-range-item';
+
+        const label = document.createElement('span');
+        const isOvernight = (block.endHour * 60 + block.endMinute) <= (block.startHour * 60 + block.startMinute);
+        const startStr = formatTime(block.startHour, block.startMinute);
+        const endStr   = formatTime(block.endHour, block.endMinute);
+        const daysStr  = formatScheduleBlockDays(block.days);
+        label.textContent = `${daysStr} · ${startStr} – ${endStr}${isOvernight ? ' (overnight)' : ''}`;
+
+        const removeBtn = document.createElement('button');
+        removeBtn.textContent = 'Remove';
+        removeBtn.className = 'remove-btn';
+        removeBtn.onclick = () => deleteScheduleBlock(block.id);
+
+        li.appendChild(label);
+        li.appendChild(removeBtn);
+        list.appendChild(li);
+    });
+}
+
+function deleteScheduleBlock(id) {
+    chrome.storage.local.get({ scheduleBlocks: [] }, (data) => {
+        const updated = data.scheduleBlocks.filter(b => b.id !== id);
+        chrome.storage.local.set({ scheduleBlocks: updated }, () => {
+            renderScheduleBlockList(updated);
+            showStatus('Schedule block removed.');
+        });
+    });
+}
+
+function updateSbOvernightHint() {
+    const start = document.getElementById('sb-start').value;
+    const end   = document.getElementById('sb-end').value;
+    const show = start && end && end <= start;
+    document.getElementById('sb-overnight-hint').style.display = show ? 'block' : 'none';
+}
+
+function openScheduleBlockModal() {
+    document.querySelectorAll('.day-cb').forEach(cb => { cb.checked = false; });
+    document.getElementById('sb-start').value = '';
+    document.getElementById('sb-end').value   = '';
+    document.getElementById('sb-error').textContent = '';
+    document.getElementById('sb-overnight-hint').style.display = 'none';
+    document.getElementById('sb-start').oninput = updateSbOvernightHint;
+    document.getElementById('sb-end').oninput   = updateSbOvernightHint;
+    document.getElementById('schedule-block-modal').style.display = 'flex';
+}
+
+function closeScheduleBlockModal() {
+    document.getElementById('schedule-block-modal').style.display = 'none';
+}
+
+function saveScheduleBlock() {
+    const errorEl  = document.getElementById('sb-error');
+    const startVal = document.getElementById('sb-start').value;
+    const endVal   = document.getElementById('sb-end').value;
+    const days     = Array.from(document.querySelectorAll('.day-cb:checked')).map(cb => parseInt(cb.value, 10));
+
+    if (days.length === 0) {
+        errorEl.textContent = 'Please select at least one day.';
+        return;
+    }
+    if (!startVal || !endVal) {
+        errorEl.textContent = 'Please set both start and end times.';
+        return;
+    }
+    if (startVal === endVal) {
+        errorEl.textContent = 'Start and end times cannot be the same.';
+        return;
+    }
+
+    const [startHour, startMinute] = startVal.split(':').map(Number);
+    const [endHour, endMinute]     = endVal.split(':').map(Number);
+
+    const newBlock = {
+        id: `sb_${Date.now()}`,
+        days,
+        startHour, startMinute,
+        endHour, endMinute,
+    };
+
+    chrome.storage.local.get({ scheduleBlocks: [] }, (data) => {
+        const updated = [...data.scheduleBlocks, newBlock];
+        chrome.storage.local.set({ scheduleBlocks: updated }, () => {
+            renderScheduleBlockList(updated);
+            closeScheduleBlockModal();
+            showStatus('Schedule block saved.');
         });
     });
 }

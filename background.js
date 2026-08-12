@@ -8,6 +8,47 @@ const processingTabs = new Set(); // Tracks tabs currently being processed (shor
 const pendingPromptTabs = new Set(); // Tracks tabs redirected to prompt.html, waiting for session start
 const tabsCurrentlyAtPrompt = new Set(); // Tracks tabs that have committed to prompt.html
 
+// --- Schedule Block Helpers ---
+
+// Returns the first active schedule block for the given time, or null.
+// A block is active when the current day of week is in block.days AND the
+// current clock time falls within [start, end). Overnight blocks (end <= start)
+// wrap past midnight, matching the same logic used by isRangeActive.
+function getActiveScheduleBlock(scheduleBlocks, now = Date.now()) {
+    const d = new Date(now);
+    const curDay = d.getDay(); // 0 = Sunday … 6 = Saturday
+    const cur = d.getHours() * 60 + d.getMinutes();
+
+    for (const block of scheduleBlocks) {
+        if (!block.days || !block.days.length) continue;
+        const s = block.startHour * 60 + block.startMinute;
+        const e = block.endHour * 60 + block.endMinute;
+        const isOvernight = e <= s;
+
+        let timeMatch;
+        let dayMatch;
+        if (!isOvernight) {
+            timeMatch = cur >= s && cur < e;
+            dayMatch = block.days.includes(curDay);
+        } else {
+            // After the start (same calendar day) OR before the end (early next day).
+            if (cur >= s) {
+                timeMatch = true;
+                dayMatch = block.days.includes(curDay);
+            } else {
+                timeMatch = cur < e;
+                const prevDay = (curDay + 6) % 7;
+                dayMatch = block.days.includes(prevDay);
+            }
+        }
+
+        if (timeMatch && dayMatch) return block;
+    }
+    return null;
+}
+
+// --- End Schedule Block Helpers ---
+
 // --- Time Range Helpers ---
 
 function isRangeActive(range, now = Date.now()) {
@@ -181,14 +222,27 @@ chrome.webNavigation.onCommitted.addListener(async ({ tabId, url, frameId }) => 
 
 async function checkAccess(tabId, url, domain) {
     // Fetch all session state
-    const data = await chrome.storage.local.get(['activeSessions', 'cooldowns', 'countCooldown', 'durationCooldown', 'timeRanges', 'timeRangeUsage']);
+    const data = await chrome.storage.local.get(['activeSessions', 'cooldowns', 'countCooldown', 'durationCooldown', 'timeRanges', 'timeRangeUsage', 'scheduleBlocks']);
     const sessions = data.activeSessions || {};
     const cooldowns = data.cooldowns || {};
     const timeRanges = data.timeRanges || [];
+    const scheduleBlocks = data.scheduleBlocks || [];
 
     const now = Date.now();
 
-    // 0. Check time range limits (highest priority — blocks even active sessions)
+    // 0a. Check schedule blocks (highest priority — completely blocks access, no session bypass)
+    if (scheduleBlocks.length > 0) {
+        const activeBlock = getActiveScheduleBlock(scheduleBlocks, now);
+        if (activeBlock) {
+            const promptUrl = chrome.runtime.getURL(
+                `prompt.html?url=${encodeURIComponent(url)}&msg=SCHEDULE_BLOCK&blockId=${encodeURIComponent(activeBlock.id)}`
+            );
+            redirectToPrompt(tabId, promptUrl);
+            return;
+        }
+    }
+
+    // 0b. Check time range limits (blocks even active sessions)
     if (timeRanges.length > 0) {
         const exhausted = checkTimeRangeLimits(timeRanges, data.timeRangeUsage || {}, now);
         if (exhausted.length > 0) {

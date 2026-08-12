@@ -90,7 +90,54 @@ async function showTimeRangeBlockUI(rangeId) {
     ` + '<link rel="stylesheet" href="prompt.css">';
 }
 
+async function showScheduleBlockUI(blockId) {
+    const data = await _storageGet({ scheduleBlocks: [] });
+    const block = data.scheduleBlocks.find(b => b.id === blockId);
+
+    const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    function fmtDays(days) {
+        if (!days || days.length === 0) return 'selected days';
+        if (days.length === 7) return 'every day';
+        return [...days].sort((a, b) => a - b).map(d => DAY_NAMES[d]).join(', ');
+    }
+
+    let detailHtml;
+    if (block) {
+        const startStr = formatTimeLocal(block.startHour, block.startMinute);
+        const endStr   = formatTimeLocal(block.endHour, block.endMinute);
+        const isOvernight = (block.endHour * 60 + block.endMinute) <= (block.startHour * 60 + block.startMinute);
+        detailHtml = `
+            <div class="time-range-block-info">
+                <p><strong>${fmtDays(block.days)}</strong></p>
+                <p>${startStr} – ${endStr}${isOvernight ? ' (overnight)' : ''}</p>
+                <p class="small-text">Access is completely blocked during this schedule. No session can bypass it.</p>
+                <p class="small-text">Access resumes at ${endStr}.</p>
+            </div>`;
+    } else {
+        detailHtml = `
+            <div class="time-range-block-info">
+                <p>A scheduled block is active.</p>
+                <p class="small-text">Access is completely blocked. No session can bypass it.</p>
+            </div>`;
+    }
+
+    document.body.innerHTML = `
+        <div class="container">
+            <h1 class="time-range-block-title">Scheduled Block Active</h1>
+            <p id="target-site-display">You are trying to access ${hostname}</p>
+            ${detailHtml}
+        </div>
+    ` + '<link rel="stylesheet" href="prompt.css">';
+}
+
 async function init() {
+    // Handle schedule block before any other UI (highest priority)
+    if (msgVal === 'SCHEDULE_BLOCK') {
+        const blockId = params.get('blockId');
+        await showScheduleBlockUI(blockId);
+        return;
+    }
+
     // Handle time range block before any other UI
     if (msgVal === 'TIME_RANGE') {
         const rangeId = params.get('rangeId');

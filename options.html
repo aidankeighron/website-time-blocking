@@ -72,8 +72,47 @@
             </div>
         </div>
 
+        <div class="section">
+            <h2>Schedule Blocks</h2>
+            <p class="hint">Completely block all target sites on specific days and times. No session can bypass a schedule block.</p>
+            <ul id="schedule-block-list"></ul>
+            <button id="add-schedule-block-btn">+ Add Schedule Block</button>
+        </div>
+
+        <div id="schedule-block-modal" class="modal-overlay" style="display:none;">
+            <div class="modal-box">
+                <h2>New Schedule Block</h2>
+                <div class="config-item">
+                    <label>Days of week:</label>
+                    <div class="day-picker">
+                        <label class="day-label"><input type="checkbox" class="day-cb" value="0"> Sun</label>
+                        <label class="day-label"><input type="checkbox" class="day-cb" value="1"> Mon</label>
+                        <label class="day-label"><input type="checkbox" class="day-cb" value="2"> Tue</label>
+                        <label class="day-label"><input type="checkbox" class="day-cb" value="3"> Wed</label>
+                        <label class="day-label"><input type="checkbox" class="day-cb" value="4"> Thu</label>
+                        <label class="day-label"><input type="checkbox" class="day-cb" value="5"> Fri</label>
+                        <label class="day-label"><input type="checkbox" class="day-cb" value="6"> Sat</label>
+                    </div>
+                </div>
+                <div class="config-item">
+                    <label for="sb-start">Block from:</label>
+                    <input type="time" id="sb-start">
+                </div>
+                <div class="config-item">
+                    <label for="sb-end">Block until:</label>
+                    <input type="time" id="sb-end">
+                </div>
+                <p id="sb-overnight-hint" class="hint" style="display:none;">Overnight block detected (crosses midnight).</p>
+                <div id="sb-error" class="error"></div>
+                <div class="modal-actions">
+                    <button id="sb-save-btn">Save</button>
+                    <button id="sb-cancel-btn" class="btn-secondary">Cancel</button>
+                </div>
+            </div>
+        </div>
+
         <div id="status"></div>
-        <p class="version">v1.24</p>
+        <p class="version">v1.25</p>
     </div>
     <script src="options.js"></script>
 </body>
