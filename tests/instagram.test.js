@@ -160,28 +160,7 @@ test('Non-target site (example.com) is not redirected', async () => {
     expectNoRedirect(TAB);
 });
 
-// ── 11. pendingPromptTabs: second status event on same tab doesn't double-prompt ─
-test('Instagram: duplicate status:complete event after redirect does not double-prompt', async () => {
-    // First event: no session → redirect
-    await nav(IG_HOME);
-    expect(__mockFns__['tabs.update'].mock.calls.length).toBe(1);
 
-    // Simulate stale status:complete event (no changeInfo.url) while tab is pending
-    await fireUpdated(TAB, { status: 'complete' }, { url: IG_HOME });
-
-    // Should still only have 1 redirect call
-    expect(__mockFns__['tabs.update'].mock.calls.length).toBe(1);
-});
-
-// ── 12. processingTabs lock: concurrent events for same tab skipped ─────────
-test('Instagram: concurrent onUpdated events for same tab only process once', async () => {
-    // Fire two events "simultaneously" without awaiting the first
-    const p1 = fireUpdated(TAB, { url: IG_HOME }, { url: IG_HOME });
-    const p2 = fireUpdated(TAB, { url: IG_HOME }, { url: IG_HOME });
-    await Promise.all([p1, p2]);
-    // Only one redirect should fire despite two events
-    expect(__mockFns__['tabs.update'].mock.calls.length).toBe(1);
-});
 
 // ── 13. Different tabs are processed independently ───────────────────────────
 test('Instagram: two different tabs are both redirected independently', async () => {

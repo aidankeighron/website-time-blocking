@@ -445,3 +445,46 @@ test('YouTube: session + cooldown both expired shows Session Expired', async ({ 
     await expect(page.locator('#error-msg')).toContainText('Session Expired');
     await expect(page.locator('#confirm-btn')).toBeVisible();
 });
+
+// ── Reported bug: opening several new videos in background tabs right after starting a
+// count session asked to start a new session for each one, as if the just-created session
+// didn't exist. This is a REAL browser test (not the jest mock) specifically because
+// chrome.storage.local's actual latency is far higher than the mock's near-instant
+// resolution — a read/write race on activeSessions[domain] needs real timing to surface.
+test('YouTube: opening several new videos in background tabs seconds after starting a count session does not lose the session', async ({ page, context, storage }) => {
+    await expectBlocked(page, YT_HOME);
+    await submitCount(page, 9);
+    await waitForSiteAccess(page, 'youtube.com');
+
+    // A few seconds' gap between finishing the prompt and opening the new tabs, matching
+    // the reported timing.
+    await page.waitForTimeout(3000);
+
+    // Simulate right-clicking several video links and opening them all in new background
+    // tabs in quick succession — fire all three navigations concurrently, not one at a time.
+    const p1 = await context.newPage();
+    const p2 = await context.newPage();
+    const p3 = await context.newPage();
+    await Promise.all([
+        p1.goto(VIDEO_A, { waitUntil: 'commit' }).catch(() => null),
+        p2.goto(VIDEO_B, { waitUntil: 'commit' }).catch(() => null),
+        p3.goto(VIDEO_C, { waitUntil: 'commit' }).catch(() => null),
+    ]);
+
+    // None of them should ever show the start-a-session prompt — the existing session must
+    // still be found and used for all three.
+    for (const p of [p1, p2, p3]) {
+        await expect(p.locator('[data-testid="page-loaded"]')).toBeVisible({ timeout: 5000 });
+    }
+
+    // And no updates should have been lost to a read/write race — all three videos counted.
+    const data = await storage.get(['activeSessions']);
+    const session = data.activeSessions?.['youtube.com'];
+    expect(session).toBeTruthy();
+    expect(session.watchedVideoIds).toEqual(expect.arrayContaining(['aaa111', 'bbb222', 'ccc333']));
+    expect(session.videosWatched).toBe(3);
+
+    await p1.close();
+    await p2.close();
+    await p3.close();
+});

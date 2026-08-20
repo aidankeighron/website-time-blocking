@@ -202,17 +202,38 @@ input[type="time"]:focus {
 }
 
 .day-label {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: var(--space-3);
-    font-size: var(--font-size-sm);
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    background-color: var(--alt-background-neutral);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-xs);
+    font-weight: bold;
     cursor: pointer;
     user-select: none;
+    transition: background-color var(--transition-base), color var(--transition-base);
 }
 
-.day-label input[type="checkbox"] {
+.day-label:hover  { animation: pulsate 0.25s ease both; }
+.day-label:active { animation: click-press 0.25s ease both; }
+
+.day-label.selected {
+    background-color: var(--accent);
+    color: var(--foreground);
+}
+
+.day-label:focus-within {
+    outline: var(--border-accent);
+    outline-offset: 2px;
+}
+
+.day-label input.day-cb {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    opacity: 0;
     cursor: pointer;
-    accent-color: var(--accent);
-    width: 16px;
-    height: 16px;
 }

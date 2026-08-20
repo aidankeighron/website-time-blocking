@@ -104,19 +104,20 @@ async function waitForSiteAccess(page, domain) {
 
 // ── Storage presets ───────────────────────────────────────────────────────────
 
-/** Returns storage data for an active time-range block with limit already exhausted. */
-function exhaustedTimeRange() {
+/** Returns storage data for an active scheduled-limit window with usage already exhausted. */
+function exhaustedScheduledLimit() {
     const now = new Date();
     const dateKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     return {
-        timeRanges: [{
-            id: 'range1',
+        scheduledLimits: [{
+            id: 'limit1',
+            days: [0, 1, 2, 3, 4, 5, 6],
             startHour: 0, startMinute: 0,
             endHour: 23, endMinute: 59,
             limitMinutes: 1,
         }],
-        timeRangeUsage: {
-            range1: { dateKey, usedSeconds: 120 }, // 2 min used > 1 min limit
+        scheduledUsage: {
+            limit1: { dateKey, bankedSeconds: 120 }, // 2 min banked > 1 min limit — no span needed
         },
     };
 }
@@ -127,5 +128,5 @@ module.exports = {
     REDDIT_HOME, REDDIT_POPULAR, POST_A, POST_A_ALT, POST_B,
     expectBlocked, expectAllowed,
     submitDuration, submitCount, waitForSiteAccess,
-    exhaustedTimeRange,
+    exhaustedScheduledLimit,
 };

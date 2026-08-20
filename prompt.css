@@ -161,8 +161,8 @@ input[type="number"]:focus {
     margin-top: var(--space-11);
 }
 
-/* Time range block screen */
-.time-range-block-title {
+/* Scheduled limit block screen */
+.scheduled-limit-block-title {
     color: var(--error);
 }
 

@@ -57,73 +57,45 @@ function formatTimeLocal(hour, minute) {
     return `${h}:${String(minute).padStart(2, '0')} ${period}`;
 }
 
-async function showTimeRangeBlockUI(rangeId) {
-    const data = await _storageGet({ timeRanges: [] });
-    const range = data.timeRanges.find(r => r.id === rangeId);
+const SCHEDULED_LIMIT_DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-    let detailHtml;
-    if (range) {
-        const startStr = formatTimeLocal(range.startHour, range.startMinute);
-        const endStr = formatTimeLocal(range.endHour, range.endMinute);
-        const isOvernight = (range.endHour * 60 + range.endMinute) <= (range.startHour * 60 + range.startMinute);
-        detailHtml = `
-            <div class="time-range-block-info">
-                <p><strong>${startStr} – ${endStr}${isOvernight ? ' (overnight)' : ''}</strong></p>
-                <p>${range.limitMinutes}-minute limit used up</p>
-                <p class="small-text">All target sites are blocked for this time window.</p>
-                <p class="small-text">Access resumes after ${endStr}.</p>
-            </div>`;
-    } else {
-        detailHtml = `
-            <div class="time-range-block-info">
-                <p>A time range limit has been reached.</p>
-                <p class="small-text">All target sites are blocked until the time window ends.</p>
-            </div>`;
-    }
-
-    document.body.innerHTML = `
-        <div class="container">
-            <h1 class="time-range-block-title">Time Range Limit Reached</h1>
-            <p id="target-site-display">You are trying to access ${hostname}</p>
-            ${detailHtml}
-        </div>
-    ` + '<link rel="stylesheet" href="prompt.css">';
+function formatScheduledLimitDaysLocal(days) {
+    if (!days || days.length === 0) return 'selected days';
+    if (days.length === 7) return 'every day';
+    return [...days].sort((a, b) => a - b).map(d => SCHEDULED_LIMIT_DAY_NAMES[d]).join(', ');
 }
 
-async function showScheduleBlockUI(blockId) {
-    const data = await _storageGet({ scheduleBlocks: [] });
-    const block = data.scheduleBlocks.find(b => b.id === blockId);
-
-    const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    function fmtDays(days) {
-        if (!days || days.length === 0) return 'selected days';
-        if (days.length === 7) return 'every day';
-        return [...days].sort((a, b) => a - b).map(d => DAY_NAMES[d]).join(', ');
-    }
+async function showScheduledLimitBlockUI(limitId) {
+    const data = await _storageGet({ scheduledLimits: [] });
+    const entry = data.scheduledLimits.find(e => e.id === limitId);
 
     let detailHtml;
-    if (block) {
-        const startStr = formatTimeLocal(block.startHour, block.startMinute);
-        const endStr   = formatTimeLocal(block.endHour, block.endMinute);
-        const isOvernight = (block.endHour * 60 + block.endMinute) <= (block.startHour * 60 + block.startMinute);
+    if (entry) {
+        const startStr = formatTimeLocal(entry.startHour, entry.startMinute);
+        const endStr   = formatTimeLocal(entry.endHour, entry.endMinute);
+        const isOvernight = (entry.endHour * 60 + entry.endMinute) <= (entry.startHour * 60 + entry.startMinute);
+        const reasonLine = entry.limitMinutes === 0
+            ? 'This window is fully blocked — no browsing time is allowed.'
+            : `${entry.limitMinutes}-minute limit used up.`;
         detailHtml = `
             <div class="time-range-block-info">
-                <p><strong>${fmtDays(block.days)}</strong></p>
-                <p>${startStr} – ${endStr}${isOvernight ? ' (overnight)' : ''}</p>
-                <p class="small-text">Access is completely blocked during this schedule. No session can bypass it.</p>
-                <p class="small-text">Access resumes at ${endStr}.</p>
+                <p><strong>${formatScheduledLimitDaysLocal(entry.days)} · ${startStr} – ${endStr}${isOvernight ? ' (overnight)' : ''}</strong></p>
+                <p>${reasonLine}</p>
+                <p class="small-text">This is not a countdown you can wait out early — access resumes at ${endStr}.</p>
+                <p class="small-text">All target sites are blocked until then. No session can bypass it.</p>
             </div>`;
     } else {
         detailHtml = `
             <div class="time-range-block-info">
-                <p>A scheduled block is active.</p>
-                <p class="small-text">Access is completely blocked. No session can bypass it.</p>
+                <p>A scheduled limit is active.</p>
+                <p class="small-text">This is not a countdown you can wait out early — access resumes when this window ends.</p>
+                <p class="small-text">All target sites are blocked until then. No session can bypass it.</p>
             </div>`;
     }
 
     document.body.innerHTML = `
         <div class="container">
-            <h1 class="time-range-block-title">Scheduled Block Active</h1>
+            <h1 class="scheduled-limit-block-title">Access Blocked (Scheduled Limit)</h1>
             <p id="target-site-display">You are trying to access ${hostname}</p>
             ${detailHtml}
         </div>
@@ -131,17 +103,11 @@ async function showScheduleBlockUI(blockId) {
 }
 
 async function init() {
-    // Handle schedule block before any other UI (highest priority)
-    if (msgVal === 'SCHEDULE_BLOCK') {
-        const blockId = params.get('blockId');
-        await showScheduleBlockUI(blockId);
-        return;
-    }
-
-    // Handle time range block before any other UI
-    if (msgVal === 'TIME_RANGE') {
-        const rangeId = params.get('rangeId');
-        await showTimeRangeBlockUI(rangeId);
+    // Handle scheduled limits before any other UI (highest priority — a full block or an
+    // exhausted usage cap overrides even an active session).
+    if (msgVal === 'SCHEDULED_LIMIT') {
+        const limitId = params.get('limitId');
+        await showScheduledLimitBlockUI(limitId);
         return;
     }
 

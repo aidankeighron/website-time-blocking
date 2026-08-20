@@ -4,8 +4,8 @@
 const path = require('path');
 const BG_PATH = path.resolve(__dirname, '../background.js');
 
-// Re-require background.js so its module-level state (processingTabs, pendingPromptTabs)
-// is fresh, and its addListener calls re-populate __listeners__.
+// Re-require background.js so its module-level state
+// starts fresh for every test block, and its addListener calls re-populate __listeners__.
 function loadBackground() {
     jest.resetModules();
     require(BG_PATH);
@@ -29,8 +29,11 @@ function fireMessage(message, sender = {}) {
         let responded = false;
         const sendResponse = (resp) => { responded = true; resolve(resp); };
         handlers.forEach(fn => fn(message, sender, sendResponse));
-        // If no handler called sendResponse synchronously, resolve with undefined
-        if (!responded) setTimeout(() => resolve(undefined), 10);
+        // Fallback for a message with no matching handler at all (sendResponse never called).
+        // Generous on purpose: real handlers respond asynchronously after their own
+        // chrome.storage.local calls, which can take real time when __setStorageLatency__ is
+        // enabled — this must not race ahead of a genuine, still-pending response.
+        if (!responded) setTimeout(() => resolve(undefined), 5000);
     });
 }
 
@@ -44,6 +47,18 @@ async function fireCommitted({ tabId, url, frameId = 0 }) {
 async function fireAlarm(alarm) {
     const handlers = global.__listeners__.onAlarm;
     await Promise.all(handlers.map(fn => fn(alarm)));
+}
+
+// Fire chrome.runtime.onInstalled.
+async function fireInstalled() {
+    const handlers = global.__listeners__.onInstalled;
+    await Promise.all(handlers.map(fn => fn()));
+}
+
+// Fire chrome.runtime.onStartup.
+async function fireStartup() {
+    const handlers = global.__listeners__.onStartup;
+    await Promise.all(handlers.map(fn => fn()));
 }
 
 // Convenience: set storage keys directly.
@@ -84,6 +99,27 @@ function flushPromises() {
     return new Promise(resolve => setImmediate(resolve));
 }
 
+// Real (not fake-timer) delay, jittered within [minMs, maxMs], for simulating the pace of a
+// human doing something — reading a screen, moving a mouse, reacting — rather than a script
+// firing every action back-to-back in the same tick. Genuinely waits real wall-clock time:
+// using jest fake timers instead would defeat the purpose, since what these tests need is
+// real event-loop interleaving between concurrent async operations, which fake timers collapse
+// away entirely.
+function humanDelay(minMs, maxMs = minMs) {
+    const ms = minMs + Math.random() * (maxMs - minMs);
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Approximate wall-clock time a human takes to type `text`, at a per-character pace of
+// [minMsPerChar, maxMsPerChar] (defaults roughly match average typing speed, ~500ms/char for
+// deliberate, careful entry — slower than touch-typing since these are usually short numeric
+// fields glanced at between keystrokes). Await this before "submitting" a typed value, rather
+// than firing the equivalent action instantly.
+function humanTypingDelay(text, minMsPerChar = 90, maxMsPerChar = 220) {
+    const perChar = minMsPerChar + Math.random() * (maxMsPerChar - minMsPerChar);
+    return new Promise(resolve => setTimeout(resolve, String(text).length * perChar));
+}
+
 // Current time offset helper — lets tests shift "now" via setStorage lastActive etc.
 const NOW = Date.now();
 
@@ -94,11 +130,15 @@ module.exports = {
     fireCommitted,
     fireMessage,
     fireAlarm,
+    fireInstalled,
+    fireStartup,
     setStorage,
     clearStorage,
     lastRedirectUrl,
     expectPromptRedirect,
     expectNoRedirect,
     flushPromises,
+    humanDelay,
+    humanTypingDelay,
     NOW,
 };

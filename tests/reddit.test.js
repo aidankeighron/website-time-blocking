@@ -225,8 +225,7 @@ test('Reddit: after single_url ends, next post visit requires new session', asyn
     const s = global.__store__;
     expect(s.activeSessions?.['reddit.com']).toBeFalsy();
 
-    // A different tab (not in processingTabs) visiting POST_B now requires a new session.
-    // Uses TAB+1 to avoid the 1000ms processingTabs lock still held by TAB from the nav above.
-    await fireUpdated(TAB + 1, { url: POST_B }, { url: POST_B, status: 'loading' });
-    expectPromptRedirect(TAB + 1);
+    // Visiting POST_B now requires a new session.
+    await fireUpdated(TAB, { url: POST_B }, { url: POST_B, status: 'loading' });
+    expectPromptRedirect(TAB);
 });

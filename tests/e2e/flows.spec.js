@@ -1,78 +1,21 @@
 /**
  * Cross-site and shared flows:
- *   - Time range blocking (takes priority over everything)
  *   - Session shared across multiple tabs
  *   - No double-prompt regression
  *   - Prompt error validation
  *   - Custom targetSites configuration
+ *
+ * Scheduled-limit blocking behavior lives in tests/e2e/scheduled-limits.spec.js.
  */
 
 const { test, expect } = require('./fixture');
 const {
     YT_HOME, VIDEO_A, IG_HOME, REDDIT_HOME, POST_A,
     expectBlocked, expectAllowed, submitDuration, waitForSiteAccess,
-    exhaustedTimeRange,
 } = require('./helpers');
 
 test.beforeEach(async ({ storage }) => {
     await storage.clear();
-});
-
-// ── Time range blocking ───────────────────────────────────────────────────────
-
-test('Time range exhausted blocks YouTube even with an active duration session', async ({ page, storage }) => {
-    const now = Date.now();
-    await storage.set({
-        ...exhaustedTimeRange(),
-        activeSessions: {
-            'youtube.com': {
-                type: 'duration',
-                startTime: now - 60000,
-                endTime: now + 300000,
-                timeRangeLastCheck: now,
-            },
-        },
-    });
-    await expectBlocked(page, YT_HOME);
-    await expect(page.locator('h1')).toContainText('Time Range Limit Reached');
-});
-
-test('Time range exhausted blocks Instagram with no session', async ({ page, storage }) => {
-    await storage.set(exhaustedTimeRange());
-    await expectBlocked(page, IG_HOME);
-    await expect(page.locator('h1')).toContainText('Time Range Limit Reached');
-});
-
-test('Time range exhausted blocks Reddit with no session', async ({ page, storage }) => {
-    await storage.set(exhaustedTimeRange());
-    await expectBlocked(page, REDDIT_HOME);
-    await expect(page.locator('h1')).toContainText('Time Range Limit Reached');
-});
-
-test('Time range NOT yet exhausted allows site with active session', async ({ page, storage }) => {
-    const now = new Date();
-    const dateKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    const nowMs = now.getTime();
-    await storage.set({
-        timeRanges: [{
-            id: 'range1',
-            startHour: 0, startMinute: 0,
-            endHour: 23, endMinute: 59,
-            limitMinutes: 60, // 60 min limit
-        }],
-        timeRangeUsage: {
-            range1: { dateKey, usedSeconds: 10 }, // only 10s used — not exhausted
-        },
-        activeSessions: {
-            'youtube.com': {
-                type: 'duration',
-                startTime: nowMs - 60000,
-                endTime: nowMs + 300000,
-                timeRangeLastCheck: nowMs,
-            },
-        },
-    });
-    await expectAllowed(page, YT_HOME);
 });
 
 // ── Multi-tab session sharing ─────────────────────────────────────────────────

@@ -1,16 +1,20 @@
 document.addEventListener('DOMContentLoaded', restoreOptions);
 document.getElementById('add-site').addEventListener('click', addSite);
 document.getElementById('save-config').addEventListener('click', saveOptions);
-document.getElementById('add-time-range-btn').addEventListener('click', openTimeRangeModal);
-document.getElementById('tr-save-btn').addEventListener('click', saveTimeRange);
-document.getElementById('tr-cancel-btn').addEventListener('click', closeTimeRangeModal);
-document.getElementById('add-schedule-block-btn').addEventListener('click', openScheduleBlockModal);
-document.getElementById('sb-save-btn').addEventListener('click', saveScheduleBlock);
-document.getElementById('sb-cancel-btn').addEventListener('click', closeScheduleBlockModal);
+document.getElementById('add-scheduled-limit-btn').addEventListener('click', openScheduledLimitModal);
+document.getElementById('sl-save-btn').addEventListener('click', saveScheduledLimit);
+document.getElementById('sl-cancel-btn').addEventListener('click', closeScheduledLimitModal);
+
+// Day-of-week toggle buttons: mirror checked state onto the label for styling.
+document.querySelectorAll('.day-cb').forEach(cb => {
+    cb.addEventListener('change', () => {
+        cb.closest('.day-label').classList.toggle('selected', cb.checked);
+    });
+});
 
 // Time pickers: try to open native picker on click; do NOT block keyboard so
 // PC users can type the time directly (Firefox desktop needs this fallback).
-['tr-start', 'tr-end'].forEach(id => {
+['sl-start', 'sl-end'].forEach(id => {
     const el = document.getElementById(id);
     el.addEventListener('click', () => { try { el.showPicker(); } catch (_) {} });
 });
@@ -35,8 +39,7 @@ function restoreOptions() {
         countCooldown: 30,
         inputDelay: 0,
         extensionDuration: 30,
-        timeRanges: [],
-        scheduleBlocks: [],
+        scheduledLimits: [],
     }, (items) => {
         document.getElementById('duration-cooldown').value = items.durationCooldown;
         document.getElementById('count-cooldown').value = items.countCooldown;
@@ -47,8 +50,7 @@ function restoreOptions() {
         list.innerHTML = '';
         items.targetSites.forEach(site => createSiteElement(site));
 
-        renderTimeRangeList(items.timeRanges);
-        renderScheduleBlockList(items.scheduleBlocks);
+        renderScheduledLimitList(items.scheduledLimits);
     });
 }
 
@@ -56,19 +58,19 @@ function createSiteElement(site) {
     const list = document.getElementById('site-list');
     const li = document.createElement('li');
     li.textContent = site;
-    
+
     const removeBtn = document.createElement('button');
     removeBtn.textContent = 'Remove';
     removeBtn.className = 'remove-btn';
     removeBtn.onclick = () => {
         li.remove();
-        // We auto-save when removing?? user didn't specify. 
+        // We auto-save when removing?? user didn't specify.
         // Let's require explicit save OR auto-save. Prompt says "add and remove websites".
         // I'll make it so you have to click save, OR I'll separate the site list saving.
         // Actually, let's just save the list immediately for better UX on list manipulation
-        saveOptions(); 
+        saveOptions();
     };
-    
+
     li.appendChild(removeBtn);
     list.appendChild(li);
 }
@@ -76,7 +78,7 @@ function createSiteElement(site) {
 function addSite() {
     const input = document.getElementById('new-site');
     const domain = getDomain(input.value);
-    
+
     if (domain) {
         // Check if unique
         const currentSites = Array.from(document.querySelectorAll('#site-list li')).map(li => li.childNodes[0].textContent);
@@ -121,7 +123,9 @@ function showStatus(msg, type = 'success') {
     }, 2000);
 }
 
-// --- Time Range Functions ---
+// --- Scheduled Limit Functions ---
+
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function formatTime(hour, minute) {
     const period = hour >= 12 ? 'PM' : 'AM';
@@ -129,133 +133,33 @@ function formatTime(hour, minute) {
     return `${h}:${String(minute).padStart(2, '0')} ${period}`;
 }
 
-function renderTimeRangeList(ranges) {
-    const list = document.getElementById('time-range-list');
-    list.innerHTML = '';
-    if (!ranges || ranges.length === 0) return;
-    ranges.forEach(range => {
-        const li = document.createElement('li');
-        li.className = 'time-range-item';
-
-        const label = document.createElement('span');
-        const isOvernight = (range.endHour * 60 + range.endMinute) <= (range.startHour * 60 + range.startMinute);
-        label.textContent = `${formatTime(range.startHour, range.startMinute)} – ${formatTime(range.endHour, range.endMinute)}${isOvernight ? ' (overnight)' : ''} · ${range.limitMinutes} min`;
-
-        const removeBtn = document.createElement('button');
-        removeBtn.textContent = 'Remove';
-        removeBtn.className = 'remove-btn';
-        removeBtn.onclick = () => deleteTimeRange(range.id);
-
-        li.appendChild(label);
-        li.appendChild(removeBtn);
-        list.appendChild(li);
-    });
-}
-
-function deleteTimeRange(id) {
-    chrome.alarms.clear(`timerange_${id}`);
-    chrome.storage.local.get({ timeRanges: [], timeRangeUsage: {} }, (data) => {
-        const updated = data.timeRanges.filter(r => r.id !== id);
-        const updatedUsage = { ...data.timeRangeUsage };
-        delete updatedUsage[id];
-        chrome.storage.local.set({ timeRanges: updated, timeRangeUsage: updatedUsage }, () => {
-            renderTimeRangeList(updated);
-            showStatus('Time range removed.');
-        });
-    });
-}
-
-function updateOvernightHint() {
-    const start = document.getElementById('tr-start').value;
-    const end = document.getElementById('tr-end').value;
-    const show = start && end && end <= start;
-    document.getElementById('tr-overnight-hint').style.display = show ? 'block' : 'none';
-}
-
-function openTimeRangeModal() {
-    document.getElementById('tr-start').value = '';
-    document.getElementById('tr-end').value = '';
-    document.getElementById('tr-limit').value = '';
-    document.getElementById('tr-error').textContent = '';
-    document.getElementById('tr-overnight-hint').style.display = 'none';
-    document.getElementById('tr-start').oninput = updateOvernightHint;
-    document.getElementById('tr-end').oninput = updateOvernightHint;
-    document.getElementById('time-range-modal').style.display = 'flex';
-}
-
-function closeTimeRangeModal() {
-    document.getElementById('time-range-modal').style.display = 'none';
-}
-
-function saveTimeRange() {
-    const startVal = document.getElementById('tr-start').value;
-    const endVal = document.getElementById('tr-end').value;
-    const limitVal = parseInt(document.getElementById('tr-limit').value, 10);
-    const errorEl = document.getElementById('tr-error');
-
-    if (!startVal || !endVal) {
-        errorEl.textContent = 'Please set both start and end times.';
-        return;
-    }
-    if (!limitVal || limitVal <= 0) {
-        errorEl.textContent = 'Please enter a positive number of minutes.';
-        return;
-    }
-    if (startVal === endVal) {
-        errorEl.textContent = 'Start and end times cannot be the same.';
-        return;
-    }
-
-    const [startHour, startMinute] = startVal.split(':').map(Number);
-    const [endHour, endMinute] = endVal.split(':').map(Number);
-
-    const newRange = {
-        id: `tr_${Date.now()}`,
-        startHour, startMinute,
-        endHour, endMinute,
-        limitMinutes: limitVal
-    };
-
-    chrome.storage.local.get({ timeRanges: [] }, (data) => {
-        const updated = [...data.timeRanges, newRange];
-        chrome.storage.local.set({ timeRanges: updated }, () => {
-            renderTimeRangeList(updated);
-            closeTimeRangeModal();
-            showStatus('Time range saved.');
-        });
-    });
-}
-
-// --- Schedule Block Functions ---
-
-const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
-function formatScheduleBlockDays(days) {
+function formatScheduledLimitDays(days) {
     if (!days || days.length === 0) return 'No days';
     if (days.length === 7) return 'Every day';
     const sorted = [...days].sort((a, b) => a - b);
     return sorted.map(d => DAY_NAMES[d]).join(', ');
 }
 
-function renderScheduleBlockList(blocks) {
-    const list = document.getElementById('schedule-block-list');
+function renderScheduledLimitList(entries) {
+    const list = document.getElementById('scheduled-limit-list');
     list.innerHTML = '';
-    if (!blocks || blocks.length === 0) return;
-    blocks.forEach(block => {
+    if (!entries || entries.length === 0) return;
+    entries.forEach(entry => {
         const li = document.createElement('li');
         li.className = 'time-range-item';
 
         const label = document.createElement('span');
-        const isOvernight = (block.endHour * 60 + block.endMinute) <= (block.startHour * 60 + block.startMinute);
-        const startStr = formatTime(block.startHour, block.startMinute);
-        const endStr   = formatTime(block.endHour, block.endMinute);
-        const daysStr  = formatScheduleBlockDays(block.days);
-        label.textContent = `${daysStr} · ${startStr} – ${endStr}${isOvernight ? ' (overnight)' : ''}`;
+        const isOvernight = (entry.endHour * 60 + entry.endMinute) <= (entry.startHour * 60 + entry.startMinute);
+        const startStr = formatTime(entry.startHour, entry.startMinute);
+        const endStr   = formatTime(entry.endHour, entry.endMinute);
+        const daysStr  = formatScheduledLimitDays(entry.days);
+        const limitStr = entry.limitMinutes === 0 ? 'Full block' : `${entry.limitMinutes} min`;
+        label.textContent = `${daysStr} · ${startStr} – ${endStr}${isOvernight ? ' (overnight)' : ''} · ${limitStr}`;
 
         const removeBtn = document.createElement('button');
         removeBtn.textContent = 'Remove';
         removeBtn.className = 'remove-btn';
-        removeBtn.onclick = () => deleteScheduleBlock(block.id);
+        removeBtn.onclick = () => deleteScheduledLimit(entry.id);
 
         li.appendChild(label);
         li.appendChild(removeBtn);
@@ -263,43 +167,49 @@ function renderScheduleBlockList(blocks) {
     });
 }
 
-function deleteScheduleBlock(id) {
-    chrome.storage.local.get({ scheduleBlocks: [] }, (data) => {
-        const updated = data.scheduleBlocks.filter(b => b.id !== id);
-        chrome.storage.local.set({ scheduleBlocks: updated }, () => {
-            renderScheduleBlockList(updated);
-            showStatus('Schedule block removed.');
+function deleteScheduledLimit(id) {
+    chrome.storage.local.get({ scheduledLimits: [] }, (data) => {
+        const updated = data.scheduledLimits.filter(e => e.id !== id);
+        chrome.storage.local.set({ scheduledLimits: updated }, () => {
+            renderScheduledLimitList(updated);
+            showStatus('Scheduled limit removed.');
+            chrome.runtime.sendMessage({ action: 'scheduledLimitsChanged' });
         });
     });
 }
 
-function updateSbOvernightHint() {
-    const start = document.getElementById('sb-start').value;
-    const end   = document.getElementById('sb-end').value;
+function updateSlOvernightHint() {
+    const start = document.getElementById('sl-start').value;
+    const end   = document.getElementById('sl-end').value;
     const show = start && end && end <= start;
-    document.getElementById('sb-overnight-hint').style.display = show ? 'block' : 'none';
+    document.getElementById('sl-overnight-hint').style.display = show ? 'block' : 'none';
 }
 
-function openScheduleBlockModal() {
-    document.querySelectorAll('.day-cb').forEach(cb => { cb.checked = false; });
-    document.getElementById('sb-start').value = '';
-    document.getElementById('sb-end').value   = '';
-    document.getElementById('sb-error').textContent = '';
-    document.getElementById('sb-overnight-hint').style.display = 'none';
-    document.getElementById('sb-start').oninput = updateSbOvernightHint;
-    document.getElementById('sb-end').oninput   = updateSbOvernightHint;
-    document.getElementById('schedule-block-modal').style.display = 'flex';
+function openScheduledLimitModal() {
+    document.querySelectorAll('.day-cb').forEach(cb => {
+        cb.checked = false;
+        cb.closest('.day-label').classList.remove('selected');
+    });
+    document.getElementById('sl-start').value = '';
+    document.getElementById('sl-end').value   = '';
+    document.getElementById('sl-limit').value = '';
+    document.getElementById('sl-error').textContent = '';
+    document.getElementById('sl-overnight-hint').style.display = 'none';
+    document.getElementById('sl-start').oninput = updateSlOvernightHint;
+    document.getElementById('sl-end').oninput   = updateSlOvernightHint;
+    document.getElementById('scheduled-limit-modal').style.display = 'flex';
 }
 
-function closeScheduleBlockModal() {
-    document.getElementById('schedule-block-modal').style.display = 'none';
+function closeScheduledLimitModal() {
+    document.getElementById('scheduled-limit-modal').style.display = 'none';
 }
 
-function saveScheduleBlock() {
-    const errorEl  = document.getElementById('sb-error');
-    const startVal = document.getElementById('sb-start').value;
-    const endVal   = document.getElementById('sb-end').value;
+function saveScheduledLimit() {
+    const errorEl  = document.getElementById('sl-error');
+    const startVal = document.getElementById('sl-start').value;
+    const endVal   = document.getElementById('sl-end').value;
     const days     = Array.from(document.querySelectorAll('.day-cb:checked')).map(cb => parseInt(cb.value, 10));
+    const limitVal = parseInt(document.getElementById('sl-limit').value, 10);
 
     if (days.length === 0) {
         errorEl.textContent = 'Please select at least one day.';
@@ -313,23 +223,33 @@ function saveScheduleBlock() {
         errorEl.textContent = 'Start and end times cannot be the same.';
         return;
     }
+    if (!Number.isInteger(limitVal) || limitVal < 0) {
+        errorEl.textContent = 'Please enter minutes allowed (0 or more — 0 means a full block).';
+        return;
+    }
 
     const [startHour, startMinute] = startVal.split(':').map(Number);
     const [endHour, endMinute]     = endVal.split(':').map(Number);
 
-    const newBlock = {
-        id: `sb_${Date.now()}`,
+    const newEntry = {
+        id: `sl_${Date.now()}`,
         days,
         startHour, startMinute,
         endHour, endMinute,
+        limitMinutes: limitVal,
+        // Usage tracking never counts time before an entry existed (see background.js's
+        // computeUsedSeconds) — without this, creating a limit mid-session could retroactively
+        // bill already-elapsed browsing and appear instantly exhausted.
+        createdAt: Date.now(),
     };
 
-    chrome.storage.local.get({ scheduleBlocks: [] }, (data) => {
-        const updated = [...data.scheduleBlocks, newBlock];
-        chrome.storage.local.set({ scheduleBlocks: updated }, () => {
-            renderScheduleBlockList(updated);
-            closeScheduleBlockModal();
-            showStatus('Schedule block saved.');
+    chrome.storage.local.get({ scheduledLimits: [] }, (data) => {
+        const updated = [...data.scheduledLimits, newEntry];
+        chrome.storage.local.set({ scheduledLimits: updated }, () => {
+            renderScheduledLimitList(updated);
+            closeScheduledLimitModal();
+            showStatus('Scheduled limit saved.');
+            chrome.runtime.sendMessage({ action: 'scheduledLimitsChanged' });
         });
     });
 }

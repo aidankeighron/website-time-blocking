@@ -408,3 +408,92 @@ test('YouTube: alarm for non-existent session is ignored', async () => {
 
     expect(__mockFns__['tabs.update'].mock.calls.length).toBe(0);
 });
+
+// ── 21. Concurrency: opening several new videos in background tabs at once ───────
+// Regression test: reported bug was "started a count session, right-clicked several videos
+// open in new tabs, and each one asked me to start a NEW session" — i.e. an already-active
+// session appeared to not exist for tabs opened nearly simultaneously. checkAccess does an
+// unlocked read-modify-write on activeSessions[domain]; without per-domain serialization, two
+// overlapping calls for the same domain can each read the session before either writes,
+// letting the second write silently clobber the first's update. Firing these WITHOUT
+// sequentially awaiting between them (Promise.all, not two separate awaited calls) is what
+// actually exercises the interleaving — async functions yield at their first `await` even
+// when the awaited promise resolves instantly, so this reproduces the real race shape.
+test('YouTube: opening multiple new videos in different tabs at nearly the same instant does not lose the active session or its updates', async () => {
+    setStorage({
+        activeSessions: {
+            'youtube.com': {
+                type: 'count',
+                startTime: NOW,
+                targetCount: 9,
+                videosWatched: 1,
+                watchedVideoIds: ['aaa111'],
+                lastActive: NOW,
+            },
+        },
+        countCooldown: 30,
+    });
+
+    const TAB_B = 201;
+    const TAB_C = 202;
+    const TAB_D = 203;
+
+    await Promise.all([
+        fireUpdated(TAB_B, { url: VIDEO_B }, { url: VIDEO_B, status: 'loading' }),
+        fireUpdated(TAB_C, { url: VIDEO_C }, { url: VIDEO_C, status: 'loading' }),
+        fireUpdated(TAB_D, { url: 'https://www.youtube.com/watch?v=ddd444' }, { url: 'https://www.youtube.com/watch?v=ddd444', status: 'loading' }),
+    ]);
+
+    // None of the three concurrently-opened tabs should have been asked to start a new
+    // session — the existing one must still be found and used for all of them.
+    expectNoRedirect(TAB_B);
+    expectNoRedirect(TAB_C);
+    expectNoRedirect(TAB_D);
+
+    // All three videos must be correctly counted — no lost updates from the race.
+    const s = global.__store__;
+    const session = s.activeSessions['youtube.com'];
+    expect(session).toBeDefined();
+    expect(session.watchedVideoIds).toEqual(expect.arrayContaining(['aaa111', 'bbb222', 'ccc333', 'ddd444']));
+    expect(session.videosWatched).toBe(4);
+});
+
+// ── 22. Sequential variant: switching to each background tab one at a time ───────
+// Same reported scenario, but modeling the alternative theory of how Chrome actually delivers
+// these events — background tabs opened via right-click may not navigate until the user
+// switches to each one, making the checkAccess calls fully sequential rather than concurrent.
+// Included alongside test 21 so a real bug in either the concurrent OR the sequential path
+// gets caught, since it isn't certain from the report alone which actually happened.
+test('YouTube: switching to several new-tab videos one at a time (fully sequential) does not lose the active session', async () => {
+    setStorage({
+        activeSessions: {
+            'youtube.com': {
+                type: 'count',
+                startTime: NOW,
+                targetCount: 9,
+                videosWatched: 1,
+                watchedVideoIds: ['aaa111'],
+                lastActive: NOW,
+            },
+        },
+        countCooldown: 30,
+    });
+
+    const TAB_B = 211;
+    const TAB_C = 212;
+    const TAB_D = 213;
+
+    await fireUpdated(TAB_B, { url: VIDEO_B }, { url: VIDEO_B, status: 'loading' });
+    expectNoRedirect(TAB_B);
+
+    await fireUpdated(TAB_C, { url: VIDEO_C }, { url: VIDEO_C, status: 'loading' });
+    expectNoRedirect(TAB_C);
+
+    await fireUpdated(TAB_D, { url: 'https://www.youtube.com/watch?v=ddd444' }, { url: 'https://www.youtube.com/watch?v=ddd444', status: 'loading' });
+    expectNoRedirect(TAB_D);
+
+    const session = global.__store__.activeSessions['youtube.com'];
+    expect(session).toBeDefined();
+    expect(session.watchedVideoIds).toEqual(expect.arrayContaining(['aaa111', 'bbb222', 'ccc333', 'ddd444']));
+    expect(session.videosWatched).toBe(4);
+});

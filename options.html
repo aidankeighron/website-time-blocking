@@ -42,77 +42,51 @@
             <button id="save-config">Save Configuration</button>
         </div>
         <div class="section">
-            <h2>Time Range Limits</h2>
-            <p class="hint">Global usage cap across all target sites within a time window. Resets daily.</p>
-            <ul id="time-range-list"></ul>
-            <button id="add-time-range-btn">+ Add New Time Range</button>
+            <h2>Scheduled Limits</h2>
+            <p class="hint">Cap or fully block usage of all target sites on specific days, during a specific time window. No session can bypass this once the limit is hit.</p>
+            <ul id="scheduled-limit-list"></ul>
+            <button id="add-scheduled-limit-btn">+ Add Scheduled Limit</button>
         </div>
 
-        <div id="time-range-modal" class="modal-overlay" style="display:none;">
+        <div id="scheduled-limit-modal" class="modal-overlay" style="display:none;">
             <div class="modal-box">
-                <h2>New Time Range</h2>
-                <div class="config-item">
-                    <label for="tr-start">Start time:</label>
-                    <input type="time" id="tr-start">
-                </div>
-                <div class="config-item">
-                    <label for="tr-end">End time:</label>
-                    <input type="time" id="tr-end">
-                </div>
-                <div class="config-item">
-                    <label for="tr-limit">Minutes allowed:</label>
-                    <input type="number" id="tr-limit" min="1" placeholder="e.g. 10">
-                </div>
-                <p id="tr-overnight-hint" class="hint" style="display:none;">Overnight range detected (crosses midnight).</p>
-                <div id="tr-error" class="error"></div>
-                <div class="modal-actions">
-                    <button id="tr-save-btn">Save</button>
-                    <button id="tr-cancel-btn" class="btn-secondary">Cancel</button>
-                </div>
-            </div>
-        </div>
-
-        <div class="section">
-            <h2>Schedule Blocks</h2>
-            <p class="hint">Completely block all target sites on specific days and times. No session can bypass a schedule block.</p>
-            <ul id="schedule-block-list"></ul>
-            <button id="add-schedule-block-btn">+ Add Schedule Block</button>
-        </div>
-
-        <div id="schedule-block-modal" class="modal-overlay" style="display:none;">
-            <div class="modal-box">
-                <h2>New Schedule Block</h2>
+                <h2>New Scheduled Limit</h2>
                 <div class="config-item">
                     <label>Days of week:</label>
                     <div class="day-picker">
-                        <label class="day-label"><input type="checkbox" class="day-cb" value="0"> Sun</label>
-                        <label class="day-label"><input type="checkbox" class="day-cb" value="1"> Mon</label>
-                        <label class="day-label"><input type="checkbox" class="day-cb" value="2"> Tue</label>
-                        <label class="day-label"><input type="checkbox" class="day-cb" value="3"> Wed</label>
-                        <label class="day-label"><input type="checkbox" class="day-cb" value="4"> Thu</label>
-                        <label class="day-label"><input type="checkbox" class="day-cb" value="5"> Fri</label>
-                        <label class="day-label"><input type="checkbox" class="day-cb" value="6"> Sat</label>
+                        <label class="day-label" title="Sunday"><input type="checkbox" class="day-cb" value="0"> Su</label>
+                        <label class="day-label" title="Monday"><input type="checkbox" class="day-cb" value="1"> M</label>
+                        <label class="day-label" title="Tuesday"><input type="checkbox" class="day-cb" value="2"> T</label>
+                        <label class="day-label" title="Wednesday"><input type="checkbox" class="day-cb" value="3"> W</label>
+                        <label class="day-label" title="Thursday"><input type="checkbox" class="day-cb" value="4"> Th</label>
+                        <label class="day-label" title="Friday"><input type="checkbox" class="day-cb" value="5"> F</label>
+                        <label class="day-label" title="Saturday"><input type="checkbox" class="day-cb" value="6"> Sa</label>
                     </div>
                 </div>
                 <div class="config-item">
-                    <label for="sb-start">Block from:</label>
-                    <input type="time" id="sb-start">
+                    <label for="sl-start">Start time:</label>
+                    <input type="time" id="sl-start">
                 </div>
                 <div class="config-item">
-                    <label for="sb-end">Block until:</label>
-                    <input type="time" id="sb-end">
+                    <label for="sl-end">End time:</label>
+                    <input type="time" id="sl-end">
                 </div>
-                <p id="sb-overnight-hint" class="hint" style="display:none;">Overnight block detected (crosses midnight).</p>
-                <div id="sb-error" class="error"></div>
+                <div class="config-item">
+                    <label for="sl-limit">Minutes allowed:</label>
+                    <input type="number" id="sl-limit" min="0" placeholder="0 = full block, e.g. 30">
+                </div>
+                <p class="hint">0 minutes = block completely for this window. No access at all, no session can bypass it.</p>
+                <p id="sl-overnight-hint" class="hint" style="display:none;">Overnight window detected (crosses midnight).</p>
+                <div id="sl-error" class="error"></div>
                 <div class="modal-actions">
-                    <button id="sb-save-btn">Save</button>
-                    <button id="sb-cancel-btn" class="btn-secondary">Cancel</button>
+                    <button id="sl-save-btn">Save</button>
+                    <button id="sl-cancel-btn" class="btn-secondary">Cancel</button>
                 </div>
             </div>
         </div>
 
         <div id="status"></div>
-        <p class="version">v1.25</p>
+        <p class="version">v1.27</p>
     </div>
     <script src="options.js"></script>
 </body>

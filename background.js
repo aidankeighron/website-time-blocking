@@ -4,116 +4,355 @@
 // We use chrome.storage.local for persistence.
 
 const DEFAULT_TARGETS = ['instagram.com', 'reddit.com', 'youtube.com'];
-const processingTabs = new Set(); // Tracks tabs currently being processed (short-lived lock)
-const pendingPromptTabs = new Set(); // Tracks tabs redirected to prompt.html, waiting for session start
-const tabsCurrentlyAtPrompt = new Set(); // Tracks tabs that have committed to prompt.html
 
-// --- Schedule Block Helpers ---
+// --- Scheduled Limits Helpers ---
+//
+// A "Scheduled Limit" is { id, days:[0-6], startHour, startMinute, endHour, endMinute, limitMinutes }.
+// limitMinutes === 0 means a full/direct block for the whole window (no usage tracking needed).
+// limitMinutes > 0 means a shared usage-minutes cap (across all target sites) that resets each
+// time a new active occurrence of the window begins.
+//
+// Usage is tracked via a SPAN, not incremental accumulation: a single global
+// scheduledSpanStart marks when the current unbroken stretch of "some session is granting
+// access to a target site" began, and scheduledSpanLastLiveness marks the last confirmed
+// "still granting" signal within that span. Usage at any moment is computed FRESH from these
+// two absolute timestamps (see computeUsedSeconds) — there is no per-session checkpoint that
+// needs to be correctly "ticked forward" by every call site, which is what made the previous
+// delta-accumulation design fragile.
 
-// Returns the first active schedule block for the given time, or null.
-// A block is active when the current day of week is in block.days AND the
-// current clock time falls within [start, end). Overnight blocks (end <= start)
-// wrap past midnight, matching the same logic used by isRangeActive.
-function getActiveScheduleBlock(scheduleBlocks, now = Date.now()) {
+// Liveness tolerance: if nothing has confirmed "still granting access" within this window, the
+// live portion of an open span stops growing at (lastLiveness + this), instead of extending to
+// `now` — this is what prevents a closed browser / sleeping machine / evicted service worker
+// from silently getting billed as usage. 3x the content-script liveness-ping interval (30s).
+const SPAN_TOLERANCE_MS = 90000;
+
+// Returns true if `entry`'s day-of-week + time-of-day window is active at `now`.
+// Overnight windows (end <= start) wrap past midnight: the evening portion checks curDay,
+// the early-morning portion (before `end`) checks the PREVIOUS calendar day's inclusion.
+function isWindowActive(entry, now = Date.now()) {
+    if (!entry.days || !entry.days.length) return false;
     const d = new Date(now);
-    const curDay = d.getDay(); // 0 = Sunday … 6 = Saturday
+    const curDay = d.getDay();
     const cur = d.getHours() * 60 + d.getMinutes();
 
-    for (const block of scheduleBlocks) {
-        if (!block.days || !block.days.length) continue;
-        const s = block.startHour * 60 + block.startMinute;
-        const e = block.endHour * 60 + block.endMinute;
-        const isOvernight = e <= s;
+    const s = entry.startHour * 60 + entry.startMinute;
+    const e = entry.endHour * 60 + entry.endMinute;
+    const isOvernight = e <= s;
 
-        let timeMatch;
-        let dayMatch;
-        if (!isOvernight) {
-            timeMatch = cur >= s && cur < e;
-            dayMatch = block.days.includes(curDay);
-        } else {
-            // After the start (same calendar day) OR before the end (early next day).
-            if (cur >= s) {
-                timeMatch = true;
-                dayMatch = block.days.includes(curDay);
-            } else {
-                timeMatch = cur < e;
-                const prevDay = (curDay + 6) % 7;
-                dayMatch = block.days.includes(prevDay);
-            }
-        }
-
-        if (timeMatch && dayMatch) return block;
+    if (!isOvernight) {
+        return cur >= s && cur < e && entry.days.includes(curDay);
     }
-    return null;
+    if (cur >= s) {
+        return entry.days.includes(curDay);
+    }
+    const prevDay = (curDay + 6) % 7;
+    return cur < e && entry.days.includes(prevDay);
 }
 
-// --- End Schedule Block Helpers ---
-
-// --- Time Range Helpers ---
-
-function isRangeActive(range, now = Date.now()) {
+// Calendar-date bucket key for usage accounting. Overnight windows whose early-morning
+// portion is currently active are bucketed under the PREVIOUS day's date, so usage keeps
+// accumulating against the same occurrence rather than resetting at midnight.
+function getWindowDateKey(entry, now = Date.now()) {
     const d = new Date(now);
     const cur = d.getHours() * 60 + d.getMinutes();
-    const s = range.startHour * 60 + range.startMinute;
-    const e = range.endHour * 60 + range.endMinute;
-    return e > s ? (cur >= s && cur < e) : (cur >= s || cur < e);
-}
-
-function getRangeDateKey(range, now = Date.now()) {
-    const d = new Date(now);
-    const cur = d.getHours() * 60 + d.getMinutes();
-    const s = range.startHour * 60 + range.startMinute;
-    const e = range.endHour * 60 + range.endMinute;
+    const s = entry.startHour * 60 + entry.startMinute;
+    const e = entry.endHour * 60 + entry.endMinute;
     const isOvernight = e <= s;
     const base = (isOvernight && cur < s) ? new Date(now - 86400000) : d;
-    return `${base.getFullYear()}-${String(base.getMonth()+1).padStart(2,'0')}-${String(base.getDate()).padStart(2,'0')}`;
+    return `${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, '0')}-${String(base.getDate()).padStart(2, '0')}`;
 }
 
-function getActiveRangeIds(timeRanges, now = Date.now()) {
-    return timeRanges.filter(r => isRangeActive(r, now)).map(r => r.id);
+// Ms timestamp of the end of the CURRENTLY ACTIVE window. Precondition: isWindowActive(entry, now).
+function getWindowEndTimestamp(entry, now = Date.now()) {
+    const d = new Date(now);
+    const cur = d.getHours() * 60 + d.getMinutes();
+    const s = entry.startHour * 60 + entry.startMinute;
+    const e = entry.endHour * 60 + entry.endMinute;
+    const isOvernight = e <= s;
+
+    const endDate = new Date(d);
+    endDate.setHours(entry.endHour, entry.endMinute, 0, 0);
+
+    if (!isOvernight) return endDate.getTime();
+    // Overnight: evening portion (cur >= s) ends tomorrow; early-morning portion ends today.
+    if (cur >= s) endDate.setDate(endDate.getDate() + 1);
+    return endDate.getTime();
 }
 
-function accumulateUsage(elapsedSeconds, activeRangeIds, timeRangeUsage, timeRanges, now = Date.now()) {
-    const updated = { ...timeRangeUsage };
-    for (const id of activeRangeIds) {
-        const range = timeRanges.find(r => r.id === id);
-        if (!range) continue;
-        const dateKey = getRangeDateKey(range, now);
-        const prev = updated[id] || { dateKey: null, usedSeconds: 0 };
-        updated[id] = {
-            dateKey,
-            usedSeconds: (prev.dateKey === dateKey ? prev.usedSeconds : 0) + elapsedSeconds
-        };
+// Ms timestamp of the START of the CURRENTLY ACTIVE window's occurrence. Precondition:
+// isWindowActive(entry, now). Mirrors getWindowEndTimestamp's overnight branching, and must
+// use the SAME overnight/day bucketing as getWindowDateKey so the two never disagree at the
+// overnight seam.
+function getCurrentWindowStartTimestamp(entry, now = Date.now()) {
+    const d = new Date(now);
+    const cur = d.getHours() * 60 + d.getMinutes();
+    const s = entry.startHour * 60 + entry.startMinute;
+    const e = entry.endHour * 60 + entry.endMinute;
+    const isOvernight = e <= s;
+
+    const startDate = new Date(d);
+    startDate.setHours(entry.startHour, entry.startMinute, 0, 0);
+
+    if (!isOvernight) return startDate.getTime();
+    // Overnight: evening portion (cur >= s) started today; early-morning portion (cur < e)
+    // started yesterday.
+    if (cur >= s) return startDate.getTime();
+    startDate.setDate(startDate.getDate() - 1);
+    return startDate.getTime();
+}
+
+// Next ms timestamp (>= now) at which this entry's window will START. Scans 8 day-offsets
+// (0..7 inclusive) so a same-day start time that has already passed today correctly wraps
+// to the same weekday next week rather than being skipped.
+function getNextWindowStartTimestamp(entry, now = Date.now()) {
+    if (!entry.days || !entry.days.length) return null;
+    const base = new Date(now);
+    for (let offset = 0; offset <= 7; offset++) {
+        const candidate = new Date(base);
+        candidate.setDate(base.getDate() + offset);
+        if (!entry.days.includes(candidate.getDay())) continue;
+        candidate.setHours(entry.startHour, entry.startMinute, 0, 0);
+        if (candidate.getTime() >= now) return candidate.getTime();
     }
-    return updated;
+    return null; // unreachable given entry.days.length > 0
 }
 
-function checkTimeRangeLimits(timeRanges, timeRangeUsage, now = Date.now()) {
-    return timeRanges.filter(range => {
-        if (!isRangeActive(range, now)) return false;
-        const dateKey = getRangeDateKey(range, now);
-        const usage = timeRangeUsage[range.id];
-        const used = (usage && usage.dateKey === dateKey) ? usage.usedSeconds : 0;
-        return used >= range.limitMinutes * 60;
+// The earliest moment `entry` can start accruing live usage: the later of the span's own
+// start, the window's current occurrence start (pre-window time never counts), and the
+// entry's own creation time (a newly-created entry never retroactively bills browsing that
+// happened before it existed — without this, creating a limit mid-session could make it
+// appear instantly exhausted based on time nobody could have known to cap).
+function effectiveSpanStartFor(entry, spanStart, occurrenceStart) {
+    return Math.max(spanStart, occurrenceStart, entry.createdAt || 0);
+}
+
+// Pure: usage seconds for `entry` at `now`, given its banked-usage record and the GLOBAL span
+// state. Only meaningful while the entry's window is active. The live portion of an open span
+// is clipped both to the window's current occurrence (a span that began before the window
+// opened doesn't count pre-window time) and to the liveness tolerance horizon (a span that's
+// gone quiet doesn't keep accruing phantom time for however long it's been silent).
+function computeUsedSeconds(entry, usage, spanStart, lastLiveness, now = Date.now()) {
+    const dateKey = getWindowDateKey(entry, now);
+    const rec = usage[entry.id];
+    const banked = (rec && rec.dateKey === dateKey) ? rec.bankedSeconds : 0;
+
+    if (!isWindowActive(entry, now)) return banked;
+    if (spanStart == null) return banked;
+
+    const occurrenceStart = getCurrentWindowStartTimestamp(entry, now);
+    const effectiveStart = effectiveSpanStartFor(entry, spanStart, occurrenceStart);
+    const liveUntil = Math.min(now, (lastLiveness ?? spanStart) + SPAN_TOLERANCE_MS);
+    const liveSeconds = Math.max(0, (liveUntil - effectiveStart) / 1000);
+    return banked + liveSeconds;
+}
+
+// Returns ALL currently-blocking entries (active window AND (full block OR usage exhausted)).
+// Full-block entries are sorted first so callers picking "the" entry for a message get the
+// most informative one when a full block and a usage-limit happen to overlap.
+function checkScheduledLimits(entries, usage, spanStart, lastLiveness, now = Date.now()) {
+    const blocking = entries.filter(entry => {
+        if (!isWindowActive(entry, now)) return false;
+        if (entry.limitMinutes === 0) return true;
+        const used = computeUsedSeconds(entry, usage, spanStart, lastLiveness, now);
+        return used >= entry.limitMinutes * 60;
     });
+    blocking.sort((a, b) => (a.limitMinutes === 0 ? 0 : 1) - (b.limitMinutes === 0 ? 0 : 1));
+    return blocking;
 }
 
-// Accumulates elapsed time from a session into time range usage and saves to storage.
-// Returns updated timeRangeUsage object, or null if nothing was accumulated.
-async function saveTimeRangeAccumulation(domain, session, sessions, timeRanges, timeRangeUsage, now) {
-    if (!timeRanges.length || !session.timeRangeLastCheck) return null;
-    const elapsed = (now - session.timeRangeLastCheck) / 1000;
-    if (elapsed <= 0 || elapsed > 300) return null;
-    const activeIds = getActiveRangeIds(timeRanges, now);
-    if (!activeIds.length) return null;
-    const updated = accumulateUsage(elapsed, activeIds, timeRangeUsage, timeRanges, now);
-    session.timeRangeLastCheck = now;
-    sessions[domain] = session;
-    await chrome.storage.local.set({ activeSessions: sessions, timeRangeUsage: updated });
-    return updated;
+// The next ms timestamp at which this entry's blocking status could change: its next window
+// start if currently inactive; window-end if it's a full block or already exhausted (exhausted
+// never resolves to "now" — nothing changes again until the window ends and usage resets);
+// otherwise the projected exhaustion moment assuming activity continues uninterrupted, clipped
+// to window-end. If activity actually stops before that projection, syncSpanState's close
+// transition reschedules correctly at that point — this projection doesn't need its own
+// staleness handling.
+function computeNextEventTime(entry, usage, spanStart, lastLiveness, now = Date.now()) {
+    if (!isWindowActive(entry, now)) return getNextWindowStartTimestamp(entry, now);
+    const windowEnd = getWindowEndTimestamp(entry, now);
+    if (entry.limitMinutes === 0) return windowEnd;
+
+    const budget = entry.limitMinutes * 60;
+    const usedNow = computeUsedSeconds(entry, usage, spanStart, lastLiveness, now);
+    if (usedNow >= budget) return windowEnd;
+    if (spanStart == null) return windowEnd; // nobody browsing; nothing pending
+
+    const dateKey = getWindowDateKey(entry, now);
+    const rec = usage[entry.id];
+    const banked = (rec && rec.dateKey === dateKey) ? rec.bankedSeconds : 0;
+    const occurrenceStart = getCurrentWindowStartTimestamp(entry, now);
+    const effectiveStart = effectiveSpanStartFor(entry, spanStart, occurrenceStart);
+
+    const projectedExhaustion = effectiveStart + (budget - banked) * 1000;
+    return Math.min(projectedExhaustion, windowEnd);
 }
 
-// --- End Time Range Helpers ---
+// Schedules (or reschedules) the single self-managing alarm for `entry` at its next event
+// time. One-shot `when`-based alarms are self-healing: if an entry is later deleted without
+// its alarm being explicitly cleared, the alarm fires once, finds nothing, and never
+// reschedules — no leak is possible even in that case.
+function scheduleSingleEntryAlarm(entry, usage, spanStart, lastLiveness, now = Date.now()) {
+    const when = computeNextEventTime(entry, usage, spanStart, lastLiveness, now);
+    if (when == null) return;
+    chrome.alarms.create('schedlimit_' + entry.id, { when });
+}
+
+// Reconciles chrome.alarms against the current scheduledLimits: clears orphaned schedlimit_
+// alarms for deleted entries, and (re)schedules every current entry against whatever span
+// state is currently in storage. Does NOT reconcile span state itself (see syncSpanState) —
+// callers that need fresh span state should call syncSpanState first.
+async function syncScheduledLimitAlarms() {
+    const data = await chrome.storage.local.get({
+        scheduledLimits: [], scheduledUsage: {}, scheduledSpanStart: null, scheduledSpanLastLiveness: null,
+    });
+    const entries = data.scheduledLimits;
+    const now = Date.now();
+
+    const validIds = new Set(entries.map(e => e.id));
+    const existing = await chrome.alarms.getAll();
+    for (const alarm of existing) {
+        if (!alarm.name.startsWith('schedlimit_')) continue;
+        const id = alarm.name.slice('schedlimit_'.length);
+        if (!validIds.has(id)) await chrome.alarms.clear(alarm.name);
+    }
+
+    for (const entry of entries) {
+        scheduleSingleEntryAlarm(entry, data.scheduledUsage, data.scheduledSpanStart, data.scheduledSpanLastLiveness, now);
+    }
+}
+
+// Per-type "is this session currently granting the user access to the site" check, used only
+// for span open/close decisions — mirrors, but does not modify, checkAccess's own allow-vs-
+// redirect conditions for each session type.
+function isSessionGrantingAccess(session, now = Date.now()) {
+    if (session.type === 'duration') return now < session.endTime;
+
+    if (session.type === 'count') {
+        // A count session mid-cooldown can still legitimately access the homepage or rewatch
+        // an already-whitelisted video (checkAccess only blocks NEW videos once capped) — so
+        // "cooldownEndTime is set" alone does not mean not-granting. Mirror checkAccess's own
+        // two expiry conditions instead (cooldown fully expired, or 2 hours of inactivity).
+        // This also makes an abandoned under-target session (never hit its cap, tab just
+        // closed) self-correcting after 2 hours instead of reporting "granting" forever with
+        // nothing external to time it out.
+        if (session.cooldownEndTime && now > session.cooldownEndTime) return false;
+        const lastActive = session.lastActive || session.startTime;
+        return (now - lastActive) <= 2 * 60 * 60 * 1000;
+    }
+
+    if (session.type === 'single_url') {
+        // No fixed duration by design — checkAccess itself never times these out; they end
+        // only when the user navigates away from the matching URL. For SPAN-tracking purposes
+        // only, bound how long an abandoned one (tab closed without navigating away) can keep
+        // phantom-crediting usage to unrelated scheduled-limit windows, mirroring count's same
+        // 2-hour ceiling. This does not change the single_url feature itself — a real revisit
+        // within the window still resumes normally via checkSingleUrlMatch regardless.
+        const lastActive = session.lastActive || session.startTime;
+        return (now - lastActive) <= 2 * 60 * 60 * 1000;
+    }
+
+    return false;
+}
+
+function isAnySessionGrantingAccess(sessions, now = Date.now()) {
+    return Object.values(sessions).some(s => isSessionGrantingAccess(s, now));
+}
+
+// syncSpanState reads-then-writes global span state with no locking of its own. It's called
+// from many places (checkAccess, alarms, messages) that can legitimately fire concurrently
+// across different domains/tabs — without serializing the calls themselves, two overlapping
+// invocations could race (one's write clobbering the other's). We queue it onto the 
+// globalSessionQueue so it doesn't race against startSessionInternal or other writes.
+function syncSpanState(now = Date.now()) {
+    return enqueueSessionOp(() => syncSpanStateSerialized(now));
+}
+
+// Idempotent reconciler: derives span open/close state from the CURRENT activeSessions,
+// converging storage to match observed reality regardless of what happened since the last
+// call. Safe to call from anywhere, any number of times, with no risk of double-counting or
+// getting permanently stuck — this is what makes the design immune to the "forgot to update a
+// checkpoint somewhere" bug class that broke the two previous implementations.
+async function syncSpanStateSerialized(now = Date.now()) {
+    const data = await chrome.storage.local.get({
+        activeSessions: {}, scheduledLimits: [], scheduledUsage: {},
+        scheduledSpanStart: null, scheduledSpanLastLiveness: null,
+    });
+    const sessions = data.activeSessions;
+    const entries = data.scheduledLimits;
+    let usage = data.scheduledUsage;
+    let spanStart = data.scheduledSpanStart;
+    let lastLiveness = data.scheduledSpanLastLiveness;
+
+    // Clean up orphaned usage records for deleted entries safely under the queue lock
+    const validIds = new Set(entries.map(e => e.id));
+    for (const key of Object.keys(usage)) {
+        if (!validIds.has(key)) {
+            delete usage[key];
+        }
+    }
+
+    const granting = isAnySessionGrantingAccess(sessions, now);
+    const stale = spanStart != null && lastLiveness != null && (now - lastLiveness) > SPAN_TOLERANCE_MS;
+
+    let transitioned = false;
+
+    if (spanStart != null && (!granting || stale)) {
+        // Close (or close-then-reopen below, if stale but still granting): bank each
+        // currently-active entry's live portion up to the liveness horizon — never beyond it,
+        // so a stale gap never gets retroactively counted just because we're finally closing it.
+        const bankUntil = Math.min(now, (lastLiveness ?? spanStart) + SPAN_TOLERANCE_MS);
+        const updated = { ...usage };
+        for (const entry of entries) {
+            if (entry.limitMinutes === 0 || !isWindowActive(entry, now)) continue;
+            const occurrenceStart = getCurrentWindowStartTimestamp(entry, now);
+            const effectiveStart = effectiveSpanStartFor(entry, spanStart, occurrenceStart);
+            const liveSeconds = Math.max(0, (bankUntil - effectiveStart) / 1000);
+            if (liveSeconds <= 0) continue;
+            const dateKey = getWindowDateKey(entry, now);
+            const prev = updated[entry.id] || { dateKey: null, bankedSeconds: 0 };
+            updated[entry.id] = {
+                dateKey,
+                bankedSeconds: (prev.dateKey === dateKey ? prev.bankedSeconds : 0) + liveSeconds,
+            };
+        }
+        usage = updated;
+        spanStart = null;
+        lastLiveness = null;
+        transitioned = true;
+    }
+
+    if (granting && spanStart == null) {
+        spanStart = now;
+        lastLiveness = now;
+        transitioned = true;
+    }
+    // A plain refresh (granting, span already open, not stale) updates lastLiveness but is
+    // NOT a "transition" — computeNextEventTime's projection doesn't depend on lastLiveness
+    // for entries that aren't already at their exhaustion horizon, so nothing needs
+    // rescheduling on every single ping. The existing alarm (scheduled when the span opened
+    // or last transitioned) already targets the correct projected exhaustion time.
+    else if (granting && spanStart != null) {
+        lastLiveness = now;
+    }
+
+    await chrome.storage.local.set({
+        scheduledUsage: usage,
+        scheduledSpanStart: spanStart,
+        scheduledSpanLastLiveness: lastLiveness,
+    });
+
+    if (transitioned) {
+        for (const entry of entries) {
+            if (isWindowActive(entry, now)) {
+                scheduleSingleEntryAlarm(entry, usage, spanStart, lastLiveness, now);
+            }
+        }
+    }
+
+    return { usage, spanStart, lastLiveness, transitioned };
+}
+
+// --- End Scheduled Limits Helpers ---
 
 // Helper to get domain
 function getDomain(url) {
@@ -130,71 +369,44 @@ function getDomain(url) {
 // Juggler protocol drops the page when it encounters that scheme. If the storage key
 // __testPromptBase is set (by the test fixture), redirect there instead so Playwright can
 // observe the navigation normally.
-function redirectToPrompt(tabId, promptUrl) {
-    pendingPromptTabs.add(tabId);
-    chrome.storage.local.get('__testPromptBase').then(data => {
-        let finalUrl = promptUrl;
-        if (data.__testPromptBase) {
-            try {
-                const u = new URL(promptUrl);
-                finalUrl = data.__testPromptBase + u.search;
-            } catch {}
-        }
-        chrome.tabs.update(tabId, { url: finalUrl });
-    });
+async function redirectToPrompt(tabId, promptUrl) {
+    const data = await chrome.storage.local.get('__testPromptBase');
+    let finalUrl = promptUrl;
+    if (data.__testPromptBase) {
+        try {
+            const u = new URL(promptUrl);
+            finalUrl = data.__testPromptBase + u.search;
+        } catch {}
+    }
+    chrome.tabs.update(tabId, { url: finalUrl });
 }
 
 // Check if url matches target
 async function isTargetSite(url) {
     const domain = getDomain(url);
     if (!domain) return false;
-    
+
     const data = await chrome.storage.local.get({ targetSites: DEFAULT_TARGETS });
     return data.targetSites.includes(domain);
 }
 
 // Core navigation listener
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-    if (!changeInfo.url && changeInfo.status !== 'complete' && changeInfo.status !== 'loading') return;
+    // We only care if URL changed or status is loading (initial load)
+    if (!changeInfo.url && changeInfo.status !== 'loading') return;
+    
+    // If the tab is just loading the prompt, ignore logic to prevent loops
+    if (tab.url.startsWith(chrome.runtime.getURL('prompt.html'))) return;
 
     // Prefer changeInfo.url (the actual new destination) over tab.url, which can be stale
     // when status events fire after a redirect has already been issued.
     const currentUrl = changeInfo.url || tab.url;
 
-    // If the tab has committed to the prompt page, mark it and clear the debounce lock
-    // (the redirect is complete; the lock is no longer needed).
-    if (currentUrl.startsWith(chrome.runtime.getURL('prompt.html'))) {
-        tabsCurrentlyAtPrompt.add(tabId);
-        processingTabs.delete(tabId);
-        return;
-    }
-
-    // If the tab was genuinely at prompt.html and is now navigating away (e.g. after starting a session):
-    if (tabsCurrentlyAtPrompt.has(tabId)) {
-        tabsCurrentlyAtPrompt.delete(tabId);
-        pendingPromptTabs.delete(tabId);
-        // Fall through — process this navigation normally
-    } else if (pendingPromptTabs.has(tabId)) {
-        // Tab was redirected to prompt but hasn't committed there yet — this is a redirect-chain
-        // event (e.g. youtube.com → www.youtube.com) arriving before the tab reaches prompt.html.
-        return;
-    }
-
-    if (processingTabs.has(tabId)) return;
-
     const domain = getDomain(currentUrl);
     if (!domain) return;
 
-    processingTabs.add(tabId);
-
-    try {
-        if (await isTargetSite(currentUrl)) {
-            await checkAccess(tabId, currentUrl, domain);
-        }
-    } finally {
-        setTimeout(() => {
-            processingTabs.delete(tabId);
-        }, 1000);
+    if (await isTargetSite(currentUrl)) {
+        await checkAccess(tabId, currentUrl, domain);
     }
 });
 
@@ -204,52 +416,58 @@ chrome.webNavigation.onCommitted.addListener(async ({ tabId, url, frameId }) => 
     if (frameId !== 0) return;
     if (!url) return;
     if (url.startsWith('chrome-extension://') || url.startsWith('moz-extension://')) return;
-    if (pendingPromptTabs.has(tabId)) return;
-    if (processingTabs.has(tabId)) return;
 
     const domain = getDomain(url);
     if (!domain) return;
 
-    processingTabs.add(tabId);
-    try {
-        if (await isTargetSite(url)) {
-            await checkAccess(tabId, url, domain);
-        }
-    } finally {
-        setTimeout(() => { processingTabs.delete(tabId); }, 1000);
+    if (await isTargetSite(url)) {
+        await checkAccess(tabId, url, domain);
     }
 });
 
-async function checkAccess(tabId, url, domain) {
+// activeSessions and cooldowns are global objects in storage. Since we read, modify, and 
+// write them back entirely, concurrent operations across DIFFERENT domains can still clobber 
+// each other. A global queue ensures all session-mutating operations run strictly sequentially.
+let globalSessionQueue = Promise.resolve();
+
+function enqueueSessionOp(opFn) {
+    const thisCall = globalSessionQueue.catch(() => {}).then(opFn);
+    globalSessionQueue = thisCall.catch(() => {});
+    return thisCall;
+}
+
+function checkAccess(tabId, url, domain) {
+    return enqueueSessionOp(() => checkAccessSerialized(tabId, url, domain));
+}
+
+async function checkAccessSerialized(tabId, url, domain) {
+    // Reconcile span state from current reality before making the blocking decision.
+    await syncSpanStateSerialized(Date.now());
+
     // Fetch all session state
-    const data = await chrome.storage.local.get(['activeSessions', 'cooldowns', 'countCooldown', 'durationCooldown', 'timeRanges', 'timeRangeUsage', 'scheduleBlocks']);
+    const data = await chrome.storage.local.get([
+        'activeSessions', 'cooldowns', 'countCooldown', 'durationCooldown',
+        'scheduledLimits', 'scheduledUsage', 'scheduledSpanStart', 'scheduledSpanLastLiveness',
+    ]);
     const sessions = data.activeSessions || {};
     const cooldowns = data.cooldowns || {};
-    const timeRanges = data.timeRanges || [];
-    const scheduleBlocks = data.scheduleBlocks || [];
+    const scheduledLimits = data.scheduledLimits || [];
+    const scheduledUsage = data.scheduledUsage || {};
+    const spanStart = data.scheduledSpanStart ?? null;
+    const lastLiveness = data.scheduledSpanLastLiveness ?? null;
 
     const now = Date.now();
 
-    // 0a. Check schedule blocks (highest priority — completely blocks access, no session bypass)
-    if (scheduleBlocks.length > 0) {
-        const activeBlock = getActiveScheduleBlock(scheduleBlocks, now);
-        if (activeBlock) {
+    // 0. Check scheduled limits (highest priority — a full block or an exhausted usage cap
+    // overrides even an active session; no session can bypass it).
+    if (scheduledLimits.length > 0) {
+        const blocking = checkScheduledLimits(scheduledLimits, scheduledUsage, spanStart, lastLiveness, now);
+        if (blocking.length > 0) {
+            const entry = blocking[0];
             const promptUrl = chrome.runtime.getURL(
-                `prompt.html?url=${encodeURIComponent(url)}&msg=SCHEDULE_BLOCK&blockId=${encodeURIComponent(activeBlock.id)}`
+                `prompt.html?url=${encodeURIComponent(url)}&msg=SCHEDULED_LIMIT&limitId=${encodeURIComponent(entry.id)}`
             );
-            redirectToPrompt(tabId, promptUrl);
-            return;
-        }
-    }
-
-    // 0b. Check time range limits (blocks even active sessions)
-    if (timeRanges.length > 0) {
-        const exhausted = checkTimeRangeLimits(timeRanges, data.timeRangeUsage || {}, now);
-        if (exhausted.length > 0) {
-            const promptUrl = chrome.runtime.getURL(
-                `prompt.html?url=${encodeURIComponent(url)}&msg=TIME_RANGE&rangeId=${encodeURIComponent(exhausted[0].id)}`
-            );
-            redirectToPrompt(tabId, promptUrl);
+            await redirectToPrompt(tabId, promptUrl);
             return;
         }
     }
@@ -268,18 +486,19 @@ async function checkAccess(tabId, url, domain) {
                  // Session exited AND Cooldown exited while browser was closed
                  delete sessions[domain];
                  await chrome.storage.local.set({ activeSessions: sessions });
-                 
+                 await syncSpanStateSerialized(now);
+
                  const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
-                 redirectToPrompt(tabId, promptUrl);
+                 await redirectToPrompt(tabId, promptUrl);
                  return;
             } else if (now > endTime) {
                 // Expired -> Start Cooldown (Backdated to actual end time) -> Redirect
-                await endSessionAndStartCooldown(domain, 'duration', endTime);
+                await endSessionAndStartCooldownInternal(domain, 'duration', endTime);
+                await syncSpanStateSerialized(now);
                 const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Time%20Up`);
-                redirectToPrompt(tabId, promptUrl);
+                await redirectToPrompt(tabId, promptUrl);
                 return;
             }
-            await saveTimeRangeAccumulation(domain, session, sessions, timeRanges, data.timeRangeUsage || {}, now);
             return; // Allow access
 
         } else if (session.type === 'count') {
@@ -287,9 +506,10 @@ async function checkAccess(tabId, url, domain) {
             if (session.cooldownEndTime && now > session.cooldownEndTime) {
                  delete sessions[domain];
                  await chrome.storage.local.set({ activeSessions: sessions });
-                 
+                 await syncSpanStateSerialized(now);
+
                  const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
-                 redirectToPrompt(tabId, promptUrl);
+                 await redirectToPrompt(tabId, promptUrl);
                  return;
             }
 
@@ -298,15 +518,16 @@ async function checkAccess(tabId, url, domain) {
                  // Session Expired due to inactivity
                  delete sessions[domain];
                  await chrome.storage.local.set({ activeSessions: sessions });
+                 await syncSpanStateSerialized(now);
 
                  const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
-                 redirectToPrompt(tabId, promptUrl);
+                 await redirectToPrompt(tabId, promptUrl);
                  return;
             }
 
             // YouTube specific: Check video ID
             const videoId = getYouTubeVideoId(url);
-            
+
             // Initialize array if missing (migration)
             if (!session.watchedVideoIds) session.watchedVideoIds = [];
             if (session.lastVideoId && !session.watchedVideoIds.includes(session.lastVideoId)) {
@@ -316,38 +537,40 @@ async function checkAccess(tabId, url, domain) {
             if (videoId && !session.watchedVideoIds.includes(videoId)) {
                 // New unique video detected
                 session.videosWatched = (session.videosWatched || 0) + 1;
-                
+
                 if (session.videosWatched > session.targetCount) {
                     // Start Cooldown / Limit Reached
                     if (!session.cooldownEndTime) {
                          const cooldownDuration = data.countCooldown || 30;
                          const cooldownEnd = now + (cooldownDuration * 60 * 1000);
                          session.cooldownEndTime = cooldownEnd;
-                         
+
                          cooldowns[domain] = {
                              startTime: now,
                              duration: cooldownDuration * 60 * 1000
                          };
-                         
+
                          sessions[domain] = session;
                          await chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
                     }
 
+                    await syncSpanStateSerialized(now);
                     const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Limit%20Reached`);
-                    redirectToPrompt(tabId, promptUrl);
+                    await redirectToPrompt(tabId, promptUrl);
                     return;
                 } else {
                      // Add to whitelist
                      session.watchedVideoIds.push(videoId);
                      session.lastActive = now;
 
-                     // Check if we just hit the limit (Nth video)
+                     // Check if we just hit the limit (Nth video) — cooldown starts NOW even
+                     // though this navigation (the Nth video itself) is still allowed through.
                      if (session.videosWatched === session.targetCount) {
                          const cooldownDuration = data.countCooldown || 30; // default 30 min
                          // Start cooldown NOW
                          const cooldownEnd = now + (cooldownDuration * 60 * 1000);
                          session.cooldownEndTime = cooldownEnd;
-                         
+
                          cooldowns[domain] = {
                              startTime: now,
                              duration: cooldownDuration * 60 * 1000
@@ -359,26 +582,34 @@ async function checkAccess(tabId, url, domain) {
                 }
             } else {
                  // Watching a known/whitelisted video OR not a video page
-                 if (now - session.lastActive > 5000) { // 5s throttle
+                 if (!session.lastActive || now - session.lastActive > 5000) { // 5s throttle
                      session.lastActive = now;
                      sessions[domain] = session;
                      await chrome.storage.local.set({ activeSessions: sessions });
                  }
             }
 
-            await saveTimeRangeAccumulation(domain, session, sessions, timeRanges, data.timeRangeUsage || {}, now);
+            // This navigation itself may have just started a cooldown (the Nth-video case
+            // above) — resync so the span correctly closes even though this call still
+            // allows access.
+            await syncSpanStateSerialized(now);
             return; // Allow access
         } else if (session.type === 'single_url') {
             if (checkSingleUrlMatch(url, session.targetUrl)) {
-                 await saveTimeRangeAccumulation(domain, session, sessions, timeRanges, data.timeRangeUsage || {}, now);
+                 // Keep lastActive fresh so isSessionGrantingAccess's span-tracking-only
+                 // liveness bound (see above) doesn't time out an actively-revisited session.
+                 session.lastActive = now;
+                 sessions[domain] = session;
+                 await chrome.storage.local.set({ activeSessions: sessions });
                  return; // Allow access
             } else {
                  // Navigated away. End this single_url session.
                  delete sessions[domain];
                  await chrome.storage.local.set({ activeSessions: sessions });
-                 
+                 await syncSpanStateSerialized(now);
+
                  const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Finished`);
-                 redirectToPrompt(tabId, promptUrl);
+                 await redirectToPrompt(tabId, promptUrl);
                  return;
             }
         }
@@ -388,11 +619,11 @@ async function checkAccess(tabId, url, domain) {
     if (cooldowns[domain]) {
         const { startTime, duration } = cooldowns[domain];
         const endTime = startTime + duration; // Calculate end time dynamically
-        
+
         if (endTime > now) {
             const minutesLeft = Math.ceil((endTime - now) / 60000);
             const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&cooldown=${minutesLeft}`);
-            redirectToPrompt(tabId, promptUrl);
+            await redirectToPrompt(tabId, promptUrl);
             return;
         } else {
             // Expired, clean up
@@ -400,10 +631,10 @@ async function checkAccess(tabId, url, domain) {
             await chrome.storage.local.set({ cooldowns });
         }
     }
-    
+
     // 3. No Session & No Cooldown -> Redirect to Prompt to Start
     const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}`);
-    redirectToPrompt(tabId, promptUrl);
+    await redirectToPrompt(tabId, promptUrl);
 }
 
 function checkSingleUrlMatch(currentUrl, targetUrl) {
@@ -447,23 +678,27 @@ function getYouTubeVideoId(url) {
     return null;
 }
 
-async function endSessionAndStartCooldown(domain, type, overrideStartTime = null) {
+async function endSessionAndStartCooldownInternal(domain, type, overrideStartTime = null) {
     const data = await chrome.storage.local.get(['activeSessions', 'cooldowns', 'durationCooldown', 'countCooldown']);
     const sessions = data.activeSessions || {};
     const cooldowns = data.cooldowns || {};
-    
+
     delete sessions[domain];
-    
+
     const durationMinutes = (type === 'duration' ? data.durationCooldown : data.countCooldown) || 30;
-    
+
     // New Structure: Store start time and duration
     cooldowns[domain] = {
         startTime: overrideStartTime || Date.now(),
         duration: durationMinutes * 60 * 1000,
         originalType: type
     };
-    
+
     await chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
+}
+
+function endSessionAndStartCooldown(domain, type, overrideStartTime = null) {
+    return enqueueSessionOp(() => endSessionAndStartCooldownInternal(domain, type, overrideStartTime));
 }
 
 // Handle Alarms for Duration Expiry
@@ -480,44 +715,59 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
              const session = data.activeSessions[domain];
              await endSessionAndStartCooldown(domain, 'duration', session.endTime);
 
+             // This alarm ends a session with zero navigation involved — if it was the sole
+             // granting session, the span must close here, or it would stay open indefinitely
+             // until some unrelated event happens to touch it.
+             await syncSpanState(Date.now());
+
              // Redirect pages immediately
-             tabs.forEach(tab => {
+             await Promise.all(tabs.map(async tab => {
                  try {
                      if (getDomain(tab.url) === domain) {
                           const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(tab.url)}&msg=Time%20Up`);
-                          redirectToPrompt(tab.id, promptUrl);
+                          await redirectToPrompt(tab.id, promptUrl);
                      }
                  } catch(e) {}
-             });
+             }));
         }
-    } else if (alarm.name.startsWith('timerange_')) {
-        const rangeId = alarm.name.replace('timerange_', '');
-        const data = await chrome.storage.local.get(['timeRanges', 'timeRangeUsage', 'targetSites']);
-        const timeRanges = data.timeRanges || [];
-        const exhausted = checkTimeRangeLimits(timeRanges, data.timeRangeUsage || {}, Date.now());
-        if (!exhausted.find(r => r.id === rangeId)) return;
+    } else if (alarm.name.startsWith('schedlimit_')) {
+        const limitId = alarm.name.slice('schedlimit_'.length);
+        const now = Date.now();
 
-        const targetSites = data.targetSites || DEFAULT_TARGETS;
-        const tabs = await chrome.tabs.query({});
-        tabs.forEach(tab => {
-            try {
-                const domain = getDomain(tab.url);
-                if (domain && targetSites.includes(domain)) {
-                    const promptUrl = chrome.runtime.getURL(
-                        `prompt.html?url=${encodeURIComponent(tab.url)}&msg=TIME_RANGE&rangeId=${encodeURIComponent(rangeId)}`
-                    );
-                    redirectToPrompt(tab.id, promptUrl);
-                }
-            } catch(e) {}
-        });
+        // Reconcile span state from current reality first — don't trust whatever was true
+        // when this alarm was originally scheduled.
+        const { usage, spanStart, lastLiveness } = await syncSpanState(now);
+
+        const data = await chrome.storage.local.get({ scheduledLimits: [], targetSites: DEFAULT_TARGETS });
+        const entries = data.scheduledLimits;
+
+        const blocking = checkScheduledLimits(entries, usage, spanStart, lastLiveness, now);
+        if (blocking.length > 0) {
+            const entry = blocking[0];
+            const targetSites = data.targetSites;
+            const tabs = await chrome.tabs.query({});
+            await Promise.all(tabs.map(async tab => {
+                try {
+                    const tabDomain = getDomain(tab.url);
+                    if (tabDomain && targetSites.includes(tabDomain)) {
+                        const promptUrl = chrome.runtime.getURL(
+                            `prompt.html?url=${encodeURIComponent(tab.url)}&msg=SCHEDULED_LIMIT&limitId=${encodeURIComponent(entry.id)}`
+                        );
+                        await redirectToPrompt(tab.id, promptUrl);
+                    }
+                } catch (e) {}
+            }));
+        }
+
+        // Reschedule this entry's next event (window-start if now inactive, exhaustion/
+        // window-end if still active), if it still exists.
+        const stillExists = entries.find(e => e.id === limitId);
+        if (stillExists) scheduleSingleEntryAlarm(stillExists, usage, spanStart, lastLiveness, now);
     }
 });
 
 // Handle Messages from Prompt or Content Script
 chrome.tabs.onRemoved.addListener((tabId) => {
-    pendingPromptTabs.delete(tabId);
-    tabsCurrentlyAtPrompt.delete(tabId);
-    processingTabs.delete(tabId);
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -526,29 +776,48 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sendResponse({ success: success });
         }).catch(err => sendResponse({ success: false, error: err.message }));
         return true;
-    } else if (message.action === 'timeRangeHeartbeat') {
-        const tabUrl = message.tabUrl || sender.tab?.url;
-        handleTimeRangeHeartbeat(message.domain, sender.tab?.id, tabUrl)
+    } else if (message.action === 'scheduledLimitLivenessPing') {
+        syncSpanState(Date.now())
+            .then(() => sendResponse({}))
+            .catch(() => sendResponse({}));
+        return true;
+    } else if (message.action === 'scheduledLimitsChanged') {
+        // Reconcile span state first — otherwise a newly-saved/deleted entry's alarm could get
+        // scheduled against a stale span left over from before this edit.
+        syncSpanState(Date.now())
+            .then(() => syncScheduledLimitAlarms())
             .then(() => sendResponse({}))
             .catch(() => sendResponse({}));
         return true;
     }
 });
 
-async function startSession(url, type, value) {
+// Survive browser restarts / extension (re)installs: reconcile span state (this is what
+// bounds any downtime while the browser was fully closed — the liveness-tolerance formula in
+// computeUsedSeconds handles it automatically, no special-casing needed here) and alarms.
+chrome.runtime.onInstalled.addListener(async () => {
+    await syncSpanState(Date.now());
+    await syncScheduledLimitAlarms();
+});
+
+chrome.runtime.onStartup.addListener(async () => {
+    await syncSpanState(Date.now());
+    await syncScheduledLimitAlarms();
+});
+
+async function startSessionInternal(url, type, value) {
     const domain = getDomain(url);
     if (!domain) return false;
-    
+
     const data = await chrome.storage.local.get(['activeSessions']);
     const sessions = data.activeSessions || {};
-    
+
     const cooldownData = await chrome.storage.local.get(['durationCooldown']);
     const durationCooldown = cooldownData.durationCooldown || 30;
 
     const session = {
         type: type,
         startTime: Date.now(),
-        timeRangeLastCheck: Date.now()
     };
 
     if (type === 'duration') {
@@ -556,13 +825,13 @@ async function startSession(url, type, value) {
         session.endTime = Date.now() + (value * 60 * 1000);
         // Calculate and save cooldown end time based on scheduled end time
         session.cooldownEndTime = session.endTime + (durationCooldown * 60 * 1000);
-        
+
         // Create Alarm
         chrome.alarms.create(`session_${domain}`, { when: session.endTime });
-        
+
     } else if (type === 'count') {
         session.targetCount = value;
-        session.videosWatched = 0; 
+        session.videosWatched = 0;
         session.watchedVideoIds = [];
         const vid = getYouTubeVideoId(url);
         if (vid) {
@@ -572,63 +841,12 @@ async function startSession(url, type, value) {
     } else if (type === 'single_url') {
         session.targetUrl = value;
     }
-    
+
     sessions[domain] = session;
     await chrome.storage.local.set({ activeSessions: sessions });
     return true;
 }
 
-async function handleTimeRangeHeartbeat(domain, tabId, tabUrl) {
-    const data = await chrome.storage.local.get(['activeSessions', 'timeRanges', 'timeRangeUsage', 'targetSites']);
-    const timeRanges = data.timeRanges || [];
-    if (!timeRanges.length) return;
-
-    const sessions = data.activeSessions || {};
-    const session = sessions[domain];
-    if (!session) return;
-
-    const now = Date.now();
-    const rawElapsed = (now - (session.timeRangeLastCheck || session.startTime)) / 1000;
-    const elapsed = Math.min(rawElapsed, 120); // cap at 2 min to guard against browser sleep
-
-    const activeIds = getActiveRangeIds(timeRanges, now);
-    if (!activeIds.length) return;
-
-    const updatedUsage = accumulateUsage(elapsed, activeIds, data.timeRangeUsage || {}, timeRanges, now);
-    session.timeRangeLastCheck = now;
-    sessions[domain] = session;
-    await chrome.storage.local.set({ activeSessions: sessions, timeRangeUsage: updatedUsage });
-
-    // Check if any range is now exhausted and redirect ALL target site tabs
-    const exhausted = checkTimeRangeLimits(timeRanges, updatedUsage, now);
-    if (exhausted.length > 0) {
-        const rangeId = exhausted[0].id;
-        const targetSites = data.targetSites || DEFAULT_TARGETS;
-        const tabs = await chrome.tabs.query({});
-        tabs.forEach(tab => {
-            try {
-                const tabDomain = getDomain(tab.url);
-                if (tabDomain && targetSites.includes(tabDomain)) {
-                    const promptUrl = chrome.runtime.getURL(
-                        `prompt.html?url=${encodeURIComponent(tab.url)}&msg=TIME_RANGE&rangeId=${encodeURIComponent(rangeId)}`
-                    );
-                    redirectToPrompt(tab.id, promptUrl);
-                }
-            } catch(e) {}
-        });
-        return;
-    }
-
-    // Set/refresh alarms for non-exhausted active ranges
-    for (const id of activeIds) {
-        const range = timeRanges.find(r => r.id === id);
-        if (!range) continue;
-        const dateKey = getRangeDateKey(range, now);
-        const usage = updatedUsage[id];
-        const used = (usage && usage.dateKey === dateKey) ? usage.usedSeconds : 0;
-        const remaining = range.limitMinutes * 60 - used;
-        if (remaining > 0) {
-            chrome.alarms.create(`timerange_${id}`, { delayInMinutes: remaining / 60 });
-        }
-    }
+function startSession(url, type, value) {
+    return enqueueSessionOp(() => startSessionInternal(url, type, value));
 }

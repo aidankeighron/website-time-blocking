@@ -134,12 +134,15 @@
 
     let heartbeatInterval = null;
 
+    // Purely a liveness nudge — no accumulation math happens here or on the receiving end.
+    // It exists so a single long-lived page with zero navigation (e.g. one long video, no
+    // clicks) still keeps the scheduled-limit engine's liveness timestamp fresh.
     function startHeartbeat() {
         if (heartbeatInterval) return;
         heartbeatInterval = setInterval(() => {
             if (!currentSession) return;
-            chrome.runtime.sendMessage({ action: 'timeRangeHeartbeat', domain, tabUrl: window.location.href }).catch(() => {});
-        }, 60000);
+            chrome.runtime.sendMessage({ action: 'scheduledLimitLivenessPing', domain }).catch(() => {});
+        }, 30000);
     }
 
     function stopHeartbeat() {
