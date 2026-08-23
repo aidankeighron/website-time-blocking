@@ -4,6 +4,9 @@
 // We use chrome.storage.local for persistence.
 
 const DEFAULT_TARGETS = ['instagram.com', 'reddit.com', 'youtube.com'];
+const processingTabs = new Set(); // Tracks tabs currently being processed (short-lived lock)
+const pendingPromptTabs = new Set(); // Tracks tabs redirected to prompt.html, waiting to commit
+const tabsCurrentlyAtPrompt = new Set(); // Tracks tabs that have committed to prompt.html
 
 // --- Scheduled Limits Helpers ---
 //
@@ -370,6 +373,7 @@ function getDomain(url) {
 // __testPromptBase is set (by the test fixture), redirect there instead so Playwright can
 // observe the navigation normally.
 async function redirectToPrompt(tabId, promptUrl) {
+    pendingPromptTabs.add(tabId);
     const data = await chrome.storage.local.get('__testPromptBase');
     let finalUrl = promptUrl;
     if (data.__testPromptBase) {
@@ -394,19 +398,53 @@ async function isTargetSite(url) {
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     // We only care if URL changed or status is loading (initial load)
     if (!changeInfo.url && changeInfo.status !== 'loading') return;
-    
-    // If the tab is just loading the prompt, ignore logic to prevent loops
-    if (tab.url.startsWith(chrome.runtime.getURL('prompt.html'))) return;
 
     // Prefer changeInfo.url (the actual new destination) over tab.url, which can be stale
     // when status events fire after a redirect has already been issued.
     const currentUrl = changeInfo.url || tab.url;
 
+    // If the tab has committed to the prompt page, mark it and clear the debounce lock —
+    // the redirect is complete, so a later event for this tab should be treated fresh.
+    if (currentUrl.startsWith(chrome.runtime.getURL('prompt.html'))) {
+        tabsCurrentlyAtPrompt.add(tabId);
+        processingTabs.delete(tabId);
+        return;
+    }
+
+    // If the tab was genuinely at prompt.html and is now navigating away (e.g. after
+    // starting a session), clear the pending markers and fall through to process it.
+    if (tabsCurrentlyAtPrompt.has(tabId)) {
+        tabsCurrentlyAtPrompt.delete(tabId);
+        pendingPromptTabs.delete(tabId);
+    } else if (pendingPromptTabs.has(tabId)) {
+        // Tab was redirected to prompt but hasn't committed there yet — this is a
+        // redirect-chain event (e.g. site.com -> www.site.com) arriving before the tab
+        // reaches prompt.html. Ignore it so it doesn't race a second, competing redirect.
+        return;
+    }
+
+    // A rapid duplicate of an in-flight check for this same tab. Sites fire many onUpdated
+    // events per navigation (loading/complete, title, favicon, SPA route changes — this is
+    // especially aggressive on Firefox and on the exact sites this extension targets), and
+    // without this lock each one independently re-issues its own tabs.update() redirect,
+    // which itself triggers more onUpdated events — a flicker loop that can take minutes to
+    // settle before the block finally sticks.
+    if (processingTabs.has(tabId)) return;
+
     const domain = getDomain(currentUrl);
     if (!domain) return;
 
-    if (await isTargetSite(currentUrl)) {
-        await checkAccess(tabId, currentUrl, domain);
+    processingTabs.add(tabId);
+    try {
+        if (await isTargetSite(currentUrl)) {
+            await checkAccess(tabId, currentUrl, domain);
+        }
+    } finally {
+        // Release the lock after a short delay so the redirect has time to take effect
+        // before we listen again — this debounces the event stream.
+        setTimeout(() => {
+            processingTabs.delete(tabId);
+        }, 1000);
     }
 });
 
@@ -416,12 +454,19 @@ chrome.webNavigation.onCommitted.addListener(async ({ tabId, url, frameId }) => 
     if (frameId !== 0) return;
     if (!url) return;
     if (url.startsWith('chrome-extension://') || url.startsWith('moz-extension://')) return;
+    if (pendingPromptTabs.has(tabId)) return;
+    if (processingTabs.has(tabId)) return;
 
     const domain = getDomain(url);
     if (!domain) return;
 
-    if (await isTargetSite(url)) {
-        await checkAccess(tabId, url, domain);
+    processingTabs.add(tabId);
+    try {
+        if (await isTargetSite(url)) {
+            await checkAccess(tabId, url, domain);
+        }
+    } finally {
+        setTimeout(() => { processingTabs.delete(tabId); }, 1000);
     }
 });
 
@@ -768,6 +813,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 // Handle Messages from Prompt or Content Script
 chrome.tabs.onRemoved.addListener((tabId) => {
+    pendingPromptTabs.delete(tabId);
+    tabsCurrentlyAtPrompt.delete(tabId);
+    processingTabs.delete(tabId);
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

@@ -139,3 +139,57 @@ test('Navigation to prompt.html itself does not trigger another redirect', async
     await fireUpdated(TAB, { url: promptUrl }, { url: promptUrl });
     expectNoRedirect(TAB);
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// Rapid duplicate navigation events are debounced.
+// Regression coverage for the "infinite reloading" bug: sites (and Firefox itself) can fire
+// many onUpdated/onCommitted events per navigation, and without a per-tab debounce lock each
+// one independently re-issues its own redirect to prompt.html — which itself triggers more
+// onUpdated events — a flicker loop that can take minutes to settle before the block sticks.
+// ────────────────────────────────────────────────────────────────────────────
+
+test('Rapid duplicate onUpdated events for the same tab only trigger one redirect', async () => {
+    await nav(TAB, IG_HOME);
+    expectPromptRedirect(TAB);
+    const callsAfterFirst = __mockFns__['tabs.update'].mock.calls.length;
+
+    // Simulate the same navigation firing more onUpdated events before the debounce lock has
+    // cleared (e.g. status changes, favicon updates, or an SPA route change).
+    await nav(TAB, IG_HOME);
+    await nav(TAB, IG_HOME);
+
+    expect(__mockFns__['tabs.update'].mock.calls.length).toBe(callsAfterFirst);
+});
+
+test('A redirect-chain event (site.com -> www.site.com) arriving before the prompt commits does not trigger a second redirect', async () => {
+    await nav(TAB, 'https://instagram.com/');
+    expectPromptRedirect(TAB);
+    const callsAfterFirst = __mockFns__['tabs.update'].mock.calls.length;
+
+    // Browser's own www-redirect for the ORIGINAL site fires before the tab has actually
+    // committed to prompt.html.
+    await nav(TAB, IG_HOME);
+
+    expect(__mockFns__['tabs.update'].mock.calls.length).toBe(callsAfterFirst);
+});
+
+test('After committing to prompt.html and starting a session, navigating back to the site is re-checked and allowed', async () => {
+    await nav(TAB, IG_HOME);
+    expectPromptRedirect(TAB);
+
+    // Browser actually commits the navigation to prompt.html.
+    const promptUrl = `chrome-extension://fakeid/prompt.html?url=${encodeURIComponent(IG_HOME)}`;
+    await fireUpdated(TAB, { url: promptUrl }, { url: promptUrl });
+
+    // User starts a session; the prompt page then navigates back to the real site.
+    setStorage({
+        activeSessions: {
+            'instagram.com': { type: 'duration', startTime: NOW, endTime: NOW + 300000 },
+        },
+    });
+    __mockFns__['tabs.update'].mockClear();
+    await nav(TAB, IG_HOME);
+
+    // Session is active, so checkAccess allows it through — no further redirect to prompt.
+    expectNoRedirect(TAB);
+});
