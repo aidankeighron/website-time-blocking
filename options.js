@@ -1,9 +1,14 @@
-document.addEventListener('DOMContentLoaded', restoreOptions);
+document.addEventListener('DOMContentLoaded', () => {
+    restoreOptions();
+    initHalfFull();
+});
 document.getElementById('add-site').addEventListener('click', addSite);
 document.getElementById('save-config').addEventListener('click', saveOptions);
-document.getElementById('add-scheduled-limit-btn').addEventListener('click', openScheduledLimitModal);
+document.getElementById('add-scheduled-limit-btn').addEventListener('click', () => openScheduledLimitModal(null));
 document.getElementById('sl-save-btn').addEventListener('click', saveScheduledLimit);
 document.getElementById('sl-cancel-btn').addEventListener('click', closeScheduledLimitModal);
+document.getElementById('hf-login-btn').addEventListener('click', halfFullSignIn);
+document.getElementById('hf-logout-btn').addEventListener('click', halfFullSignOut);
 
 // Day-of-week toggle buttons: mirror checked state onto the label for styling.
 document.querySelectorAll('.day-cb').forEach(cb => {
@@ -19,16 +24,16 @@ document.querySelectorAll('.day-cb').forEach(cb => {
     el.addEventListener('click', () => { try { el.showPicker(); } catch (_) {} });
 });
 
+// Track which entry is being edited (null = new entry)
+let editingLimitId = null;
+
 function getDomain(url) {
     try {
-         // If user enters domain without protocol, add https:// to parse it
-        if (!url.startsWith('http')) {
-            url = 'https://' + url;
-        }
+        if (!url.startsWith('http')) url = 'https://' + url;
         const hostname = new URL(url).hostname;
         return hostname.replace(/^www\./, '');
     } catch (e) {
-        return null; // Invalid URL
+        return null;
     }
 }
 
@@ -45,11 +50,9 @@ function restoreOptions() {
         document.getElementById('count-cooldown').value = items.countCooldown;
         document.getElementById('input-delay').value = items.inputDelay;
         document.getElementById('extension-duration').value = items.extensionDuration;
-
         const list = document.getElementById('site-list');
         list.innerHTML = '';
         items.targetSites.forEach(site => createSiteElement(site));
-
         renderScheduledLimitList(items.scheduledLimits);
     });
 }
@@ -58,19 +61,10 @@ function createSiteElement(site) {
     const list = document.getElementById('site-list');
     const li = document.createElement('li');
     li.textContent = site;
-
     const removeBtn = document.createElement('button');
     removeBtn.textContent = 'Remove';
     removeBtn.className = 'remove-btn';
-    removeBtn.onclick = () => {
-        li.remove();
-        // We auto-save when removing?? user didn't specify.
-        // Let's require explicit save OR auto-save. Prompt says "add and remove websites".
-        // I'll make it so you have to click save, OR I'll separate the site list saving.
-        // Actually, let's just save the list immediately for better UX on list manipulation
-        saveOptions();
-    };
-
+    removeBtn.onclick = () => { li.remove(); saveOptions(); };
     li.appendChild(removeBtn);
     list.appendChild(li);
 }
@@ -78,16 +72,14 @@ function createSiteElement(site) {
 function addSite() {
     const input = document.getElementById('new-site');
     const domain = getDomain(input.value);
-
     if (domain) {
-        // Check if unique
         const currentSites = Array.from(document.querySelectorAll('#site-list li')).map(li => li.childNodes[0].textContent);
         if (!currentSites.includes(domain)) {
-             createSiteElement(domain);
-             saveOptions();
-             input.value = '';
+            createSiteElement(domain);
+            saveOptions();
+            input.value = '';
         } else {
-             showStatus('Site already in list.', 'error');
+            showStatus('Site already in list.', 'error');
         }
     } else {
         showStatus('Invalid domain.', 'error');
@@ -99,16 +91,8 @@ function saveOptions() {
     const countCooldown = parseInt(document.getElementById('count-cooldown').value, 10);
     const inputDelay = parseInt(document.getElementById('input-delay').value, 10);
     const extensionDuration = parseInt(document.getElementById('extension-duration').value, 10);
-
     const targetSites = Array.from(document.querySelectorAll('#site-list li')).map(li => li.childNodes[0].textContent);
-
-    chrome.storage.local.set({
-        targetSites: targetSites,
-        durationCooldown: durationCooldown,
-        countCooldown: countCooldown,
-        inputDelay: inputDelay,
-        extensionDuration: extensionDuration
-    }, () => {
+    chrome.storage.local.set({ targetSites, durationCooldown, countCooldown, inputDelay, extensionDuration }, () => {
         showStatus('Settings saved.');
     });
 }
@@ -117,15 +101,22 @@ function showStatus(msg, type = 'success') {
     const status = document.getElementById('status');
     status.textContent = msg;
     status.className = type;
-    setTimeout(() => {
-        status.textContent = '';
-        status.className = '';
-    }, 2000);
+    setTimeout(() => { status.textContent = ''; status.className = ''; }, 2000);
 }
 
 // --- Scheduled Limit Functions ---
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+// Half Full pattern color → CSS hex (mirrors half-full-desktop constants)
+const HF_PATTERN_COLORS = {
+    red: '#F04242', yellow: '#CCAA00', green: '#1DC91D', purple: '#7036E2',
+    orange: '#CC8800', darkPurple: '#3B00B2', blue: '#0060E5', default: '#888888',
+};
+
+function hfPatternColor(colorName) {
+    return HF_PATTERN_COLORS[colorName] || HF_PATTERN_COLORS.default;
+}
 
 function formatTime(hour, minute) {
     const period = hour >= 12 ? 'PM' : 'AM';
@@ -136,8 +127,7 @@ function formatTime(hour, minute) {
 function formatScheduledLimitDays(days) {
     if (!days || days.length === 0) return 'No days';
     if (days.length === 7) return 'Every day';
-    const sorted = [...days].sort((a, b) => a - b);
-    return sorted.map(d => DAY_NAMES[d]).join(', ');
+    return [...days].sort((a, b) => a - b).map(d => DAY_NAMES[d]).join(', ');
 }
 
 function renderScheduledLimitList(entries) {
@@ -148,6 +138,9 @@ function renderScheduledLimitList(entries) {
         const li = document.createElement('li');
         li.className = 'time-range-item';
 
+        const labelWrap = document.createElement('div');
+        labelWrap.className = 'time-range-label-wrap';
+
         const label = document.createElement('span');
         const isOvernight = (entry.endHour * 60 + entry.endMinute) <= (entry.startHour * 60 + entry.startMinute);
         const startStr = formatTime(entry.startHour, entry.startMinute);
@@ -155,14 +148,36 @@ function renderScheduledLimitList(entries) {
         const daysStr  = formatScheduledLimitDays(entry.days);
         const limitStr = entry.limitMinutes === 0 ? 'Full block' : `${entry.limitMinutes} min`;
         label.textContent = `${daysStr} · ${startStr} – ${endStr}${isOvernight ? ' (overnight)' : ''} · ${limitStr}`;
+        labelWrap.appendChild(label);
+
+        if (entry.halfFullPattern) {
+            const patBadge = document.createElement('span');
+            patBadge.className = 'hf-pattern-badge';
+            patBadge.style.borderColor = hfPatternColor(entry.halfFullPattern.color);
+            patBadge.style.color = hfPatternColor(entry.halfFullPattern.color);
+            patBadge.textContent = `⊕ if "${entry.halfFullPattern.pattern}"`;
+            patBadge.title = `Only active when tasks matching "${entry.halfFullPattern.pattern}" are incomplete`;
+            labelWrap.appendChild(patBadge);
+        }
+
+        li.appendChild(labelWrap);
+
+        const btnWrap = document.createElement('div');
+        btnWrap.className = 'time-range-btn-wrap';
+
+        const editBtn = document.createElement('button');
+        editBtn.textContent = 'Edit';
+        editBtn.className = 'btn-secondary';
+        editBtn.onclick = () => openScheduledLimitModal(entry);
 
         const removeBtn = document.createElement('button');
         removeBtn.textContent = 'Remove';
         removeBtn.className = 'remove-btn';
         removeBtn.onclick = () => deleteScheduledLimit(entry.id);
 
-        li.appendChild(label);
-        li.appendChild(removeBtn);
+        btnWrap.appendChild(editBtn);
+        btnWrap.appendChild(removeBtn);
+        li.appendChild(btnWrap);
         list.appendChild(li);
     });
 }
@@ -185,22 +200,67 @@ function updateSlOvernightHint() {
     document.getElementById('sl-overnight-hint').style.display = show ? 'block' : 'none';
 }
 
-function openScheduledLimitModal() {
-    document.querySelectorAll('.day-cb').forEach(cb => {
-        cb.checked = false;
-        cb.closest('.day-label').classList.remove('selected');
+// Populate the Half Full pattern dropdown from stored patterns.
+function populatePatternDropdown(selectedPatternId = '') {
+    chrome.storage.local.get({ halfFullPatterns: [], halfFullAuth: null }, (data) => {
+        const select = document.getElementById('sl-hf-pattern');
+        const hint   = document.getElementById('sl-hf-pattern-hint');
+
+        // Clear all options except the "no condition" placeholder
+        select.innerHTML = '<option value="">Always active — no condition</option>';
+
+        if (!data.halfFullAuth) {
+            hint.style.display = 'block';
+            hint.textContent = 'Connect your Half Full account below to add pattern-based conditions.';
+            return;
+        }
+
+        hint.style.display = 'block';
+        hint.textContent = 'This limit only applies when you have incomplete tasks matching the selected pattern today.';
+
+        (data.halfFullPatterns || []).forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p.id;
+            // Show the pattern keyword and its match type in the dropdown
+            const typeLabel = p.type === 'start' ? 'starts with' : p.type === 'end' ? 'ends with' : 'contains';
+            opt.textContent = `${p.pattern}  (${typeLabel})`;
+            opt.style.color = hfPatternColor(p.color);
+            if (p.id === selectedPatternId) opt.selected = true;
+            select.appendChild(opt);
+        });
     });
-    document.getElementById('sl-start').value = '';
-    document.getElementById('sl-end').value   = '';
-    document.getElementById('sl-limit').value = '';
+}
+
+function openScheduledLimitModal(existingEntry) {
+    editingLimitId = existingEntry ? existingEntry.id : null;
+    document.getElementById('sl-modal-title').textContent = existingEntry ? 'Edit Scheduled Limit' : 'New Scheduled Limit';
+
+    document.querySelectorAll('.day-cb').forEach(cb => {
+        const checked = existingEntry ? existingEntry.days.includes(parseInt(cb.value, 10)) : false;
+        cb.checked = checked;
+        cb.closest('.day-label').classList.toggle('selected', checked);
+    });
+
+    document.getElementById('sl-start').value = existingEntry
+        ? `${String(existingEntry.startHour).padStart(2,'0')}:${String(existingEntry.startMinute).padStart(2,'0')}`
+        : '';
+    document.getElementById('sl-end').value = existingEntry
+        ? `${String(existingEntry.endHour).padStart(2,'0')}:${String(existingEntry.endMinute).padStart(2,'0')}`
+        : '';
+    document.getElementById('sl-limit').value = existingEntry ? existingEntry.limitMinutes : '';
     document.getElementById('sl-error').textContent = '';
     document.getElementById('sl-overnight-hint').style.display = 'none';
     document.getElementById('sl-start').oninput = updateSlOvernightHint;
     document.getElementById('sl-end').oninput   = updateSlOvernightHint;
+
+    const selectedPatternId = existingEntry && existingEntry.halfFullPattern ? existingEntry.halfFullPattern.id : '';
+    populatePatternDropdown(selectedPatternId);
+
     document.getElementById('scheduled-limit-modal').style.display = 'flex';
 }
 
 function closeScheduledLimitModal() {
+    editingLimitId = null;
     document.getElementById('scheduled-limit-modal').style.display = 'none';
 }
 
@@ -210,19 +270,11 @@ function saveScheduledLimit() {
     const endVal   = document.getElementById('sl-end').value;
     const days     = Array.from(document.querySelectorAll('.day-cb:checked')).map(cb => parseInt(cb.value, 10));
     const limitVal = parseInt(document.getElementById('sl-limit').value, 10);
+    const selectedPatternId = document.getElementById('sl-hf-pattern').value;
 
-    if (days.length === 0) {
-        errorEl.textContent = 'Please select at least one day.';
-        return;
-    }
-    if (!startVal || !endVal) {
-        errorEl.textContent = 'Please set both start and end times.';
-        return;
-    }
-    if (startVal === endVal) {
-        errorEl.textContent = 'Start and end times cannot be the same.';
-        return;
-    }
+    if (days.length === 0) { errorEl.textContent = 'Please select at least one day.'; return; }
+    if (!startVal || !endVal) { errorEl.textContent = 'Please set both start and end times.'; return; }
+    if (startVal === endVal) { errorEl.textContent = 'Start and end times cannot be the same.'; return; }
     if (!Number.isInteger(limitVal) || limitVal < 0) {
         errorEl.textContent = 'Please enter minutes allowed (0 or more — 0 means a full block).';
         return;
@@ -231,25 +283,170 @@ function saveScheduledLimit() {
     const [startHour, startMinute] = startVal.split(':').map(Number);
     const [endHour, endMinute]     = endVal.split(':').map(Number);
 
-    const newEntry = {
-        id: `sl_${Date.now()}`,
-        days,
-        startHour, startMinute,
-        endHour, endMinute,
-        limitMinutes: limitVal,
-        // Usage tracking never counts time before an entry existed (see background.js's
-        // computeUsedSeconds) — without this, creating a limit mid-session could retroactively
-        // bill already-elapsed browsing and appear instantly exhausted.
-        createdAt: Date.now(),
-    };
+    chrome.storage.local.get({ scheduledLimits: [], halfFullPatterns: [] }, (data) => {
+        // Build the halfFullPattern field from the selected pattern
+        let halfFullPattern = null;
+        if (selectedPatternId) {
+            const pat = data.halfFullPatterns.find(p => p.id === selectedPatternId);
+            if (pat) {
+                halfFullPattern = { id: pat.id, pattern: pat.pattern, type: pat.type, color: pat.color };
+            }
+        }
 
-    chrome.storage.local.get({ scheduledLimits: [] }, (data) => {
-        const updated = [...data.scheduledLimits, newEntry];
-        chrome.storage.local.set({ scheduledLimits: updated }, () => {
-            renderScheduledLimitList(updated);
-            closeScheduledLimitModal();
-            showStatus('Scheduled limit saved.');
-            chrome.runtime.sendMessage({ action: 'scheduledLimitsChanged' });
-        });
+        if (editingLimitId) {
+            // Update existing entry (preserve id and createdAt)
+            const updated = data.scheduledLimits.map(e => {
+                if (e.id !== editingLimitId) return e;
+                return { ...e, days, startHour, startMinute, endHour, endMinute, limitMinutes: limitVal, halfFullPattern };
+            });
+            chrome.storage.local.set({ scheduledLimits: updated }, () => {
+                renderScheduledLimitList(updated);
+                closeScheduledLimitModal();
+                showStatus('Scheduled limit updated.');
+                chrome.runtime.sendMessage({ action: 'scheduledLimitsChanged' });
+            });
+        } else {
+            const newEntry = {
+                id: `sl_${Date.now()}`,
+                days, startHour, startMinute, endHour, endMinute,
+                limitMinutes: limitVal,
+                createdAt: Date.now(),
+                halfFullPattern,
+            };
+            const updated = [...data.scheduledLimits, newEntry];
+            chrome.storage.local.set({ scheduledLimits: updated }, () => {
+                renderScheduledLimitList(updated);
+                closeScheduledLimitModal();
+                showStatus('Scheduled limit saved.');
+                chrome.runtime.sendMessage({ action: 'scheduledLimitsChanged' });
+            });
+        }
     });
+}
+
+// --- Half Full Integration ---
+
+const HF_API_KEY = 'AIzaSyAFllak-Mt7RTf0hFInUMR8-25PeaiHE34';
+const HF_PROJECT_ID = 'alchemy-a816c';
+
+function initHalfFull() {
+    chrome.storage.local.get({ halfFullAuth: null }, (data) => {
+        if (data.halfFullAuth && data.halfFullAuth.email) {
+            showHalfFullLoggedIn(data.halfFullAuth.email);
+            refreshHalfFullPatterns(data.halfFullAuth);
+        } else {
+            showHalfFullLoggedOut();
+        }
+    });
+}
+
+function showHalfFullLoggedIn(email) {
+    document.getElementById('hf-logged-out').style.display = 'none';
+    document.getElementById('hf-logged-in').style.display = 'block';
+    document.getElementById('hf-user-label').textContent = `Signed in as ${email}`;
+}
+
+function showHalfFullLoggedOut() {
+    document.getElementById('hf-logged-in').style.display = 'none';
+    document.getElementById('hf-logged-out').style.display = 'block';
+}
+
+async function halfFullSignIn() {
+    const email    = document.getElementById('hf-email').value.trim();
+    const password = document.getElementById('hf-password').value;
+    const errorEl  = document.getElementById('hf-login-error');
+    const btn      = document.getElementById('hf-login-btn');
+    errorEl.textContent = '';
+    if (!email || !password) { errorEl.textContent = 'Enter your email and password.'; return; }
+    btn.disabled = true;
+    btn.textContent = 'Signing in…';
+    try {
+        const resp = await fetch(
+            `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${HF_API_KEY}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password, returnSecureToken: true }),
+            }
+        );
+        const result = await resp.json();
+        if (!resp.ok) {
+            const msg = result.error && result.error.message;
+            errorEl.textContent = msg === 'INVALID_LOGIN_CREDENTIALS'
+                ? 'Incorrect email or password.' : (msg || 'Sign-in failed.');
+            return;
+        }
+        const auth = {
+            email,
+            idToken: result.idToken,
+            refreshToken: result.refreshToken,
+            uid: result.localId,
+            expiresAt: Date.now() + parseInt(result.expiresIn, 10) * 1000,
+        };
+        await chrome.storage.local.set({ halfFullAuth: auth });
+        chrome.runtime.sendMessage({ action: 'halfFullAuthChanged' });
+        showHalfFullLoggedIn(email);
+        document.getElementById('hf-password').value = '';
+        await refreshHalfFullPatterns(auth);
+        showStatus('Signed in to Half Full.');
+    } catch (err) {
+        errorEl.textContent = 'Network error. Check your connection.';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Sign In with Half Full';
+    }
+}
+
+async function halfFullSignOut() {
+    await chrome.storage.local.remove(['halfFullAuth', 'halfFullPatterns', 'halfFullTaskCache']);
+    chrome.runtime.sendMessage({ action: 'halfFullAuthChanged' });
+    showHalfFullLoggedOut();
+    showStatus('Signed out of Half Full.');
+}
+
+// Fetch patterns from Firestore and store them locally for dropdown use.
+async function refreshHalfFullPatterns(auth) {
+    if (!auth || !auth.uid || !auth.idToken) return;
+    // Refresh token if close to expiry
+    let token = auth.idToken;
+    if (auth.expiresAt && Date.now() > auth.expiresAt - 60000) {
+        try {
+            const resp = await fetch(
+                `https://securetoken.googleapis.com/v1/token?key=${HF_API_KEY}`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(auth.refreshToken)}`,
+                }
+            );
+            if (resp.ok) {
+                const r = await resp.json();
+                const updated = { ...auth, idToken: r.id_token, refreshToken: r.refresh_token,
+                    uid: r.user_id, expiresAt: Date.now() + parseInt(r.expires_in, 10) * 1000 };
+                await chrome.storage.local.set({ halfFullAuth: updated });
+                token = updated.idToken;
+            }
+        } catch { /* use existing token */ }
+    }
+
+    try {
+        const url = `https://firestore.googleapis.com/v1/projects/${HF_PROJECT_ID}/databases/(default)/documents/users/${auth.uid}/pattern`;
+        const resp = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const docs = data.documents || [];
+        const patterns = docs.map(doc => {
+            const f = doc.fields || {};
+            const id = doc.name.split('/').pop();
+            return {
+                id,
+                pattern: f.pattern && f.pattern.stringValue || '',
+                type: f.type && f.type.stringValue || 'any',
+                color: f.color && f.color.stringValue || 'default',
+                uuid: f.uuid && f.uuid.stringValue || id,
+                visible: f.visible ? f.visible.booleanValue : true,
+            };
+        }).filter(p => p.pattern);
+        await chrome.storage.local.set({ halfFullPatterns: patterns });
+    } catch { /* silently fail */ }
 }

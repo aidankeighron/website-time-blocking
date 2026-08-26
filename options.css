@@ -237,3 +237,115 @@ input[type="time"]:focus {
     opacity: 0;
     cursor: pointer;
 }
+
+/* Email and password inputs in .config-item */
+input[type="email"],
+input[type="password"] {
+    background-color: var(--alt-background-neutral);
+    border: 1px solid transparent;
+    color: var(--foreground);
+    padding: var(--space-6);
+    border-radius: var(--radius-md);
+    font-family: var(--font-family);
+    font-size: var(--font-size-base);
+    flex-grow: 1;
+    outline: none;
+}
+
+input[type="email"]:focus,
+input[type="password"]:focus {
+    border: var(--border-accent);
+}
+
+.config-item input[type="email"],
+.config-item input[type="password"] {
+    width: auto;
+    flex-grow: 1;
+}
+
+/* Pattern condition select */
+select {
+    background-color: var(--alt-background-neutral);
+    border: 1px solid transparent;
+    color: var(--foreground);
+    padding: var(--space-6);
+    border-radius: var(--radius-md);
+    font-family: var(--font-family);
+    font-size: var(--font-size-base);
+    outline: none;
+    flex-grow: 1;
+}
+
+select:focus {
+    border: var(--border-accent);
+}
+
+/* Scheduled limit list items — wrap for edit+remove buttons */
+.time-range-item {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: var(--space-5);
+}
+
+.time-range-label-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    flex: 1;
+    min-width: 0;
+}
+
+.time-range-btn-wrap {
+    display: flex;
+    gap: var(--space-5);
+    align-items: center;
+    flex-shrink: 0;
+}
+
+/* Half Full integration */
+.hf-logo-inline {
+    height: 1.2em;
+    width: auto;
+    vertical-align: middle;
+    margin-right: var(--space-4);
+    border-radius: 3px;
+}
+
+.hf-feature-box {
+    background-color: var(--alt-background-neutral);
+    border-radius: var(--radius-md);
+    padding: var(--space-8) var(--space-10);
+    margin-bottom: var(--space-8);
+}
+
+.hf-feature-title {
+    font-weight: bold;
+    color: var(--accent);
+    margin: 0 0 var(--space-5) 0;
+    font-size: var(--font-size-sm);
+}
+
+.hf-feature-box .hint {
+    margin-top: var(--space-5);
+}
+
+.hf-link {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.hf-link:hover {
+    text-decoration: underline;
+}
+
+.hf-pattern-badge {
+    display: inline-block;
+    font-size: var(--font-size-xs);
+    border: 1px solid;
+    border-radius: var(--radius-sm);
+    padding: 1px var(--space-4);
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

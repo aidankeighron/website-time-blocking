@@ -48,6 +48,48 @@ function getDomain(url) {
 
 document.getElementById('target-site-display').textContent = `Accessing: ${hostname}`;
 
+// Rotating tips shown at the bottom of every blocking screen
+const TIPS = [
+    { text: 'Tip: Use Duration mode to set a timer — the site blocks when time runs out.' },
+    { text: 'Tip: Count mode on YouTube lets you limit yourself to a set number of videos.' },
+    { text: 'Tip: Scheduled Limits block sites during specific hours — like a daily focus window.' },
+    { text: 'Tip: The Extend button grants a brief extra window without resetting your cooldown.' },
+    { text: 'Tip: "Finish Video/Post" lets you wrap up what you were watching before locking out.' },
+    { text: 'Tip: Input Delay adds a pause before you can confirm — a moment to reconsider.' },
+    { text: 'Tip: Add multiple sites to the block list and manage them all from Settings.' },
+    { text: 'Tip: Open Settings to adjust cooldown length, input delay, and extension duration.' },
+    { text: 'Connect Half Full to make limits conditional on your task list.', hf: true },
+    { text: 'Half Full is a task manager — when tasks are done, your limits can lift automatically.', hf: true },
+    { text: 'Earn your screen time: link Half Full so limits lift once your tasks are checked off.', hf: true },
+];
+
+function appendTipBar() {
+    if (document.getElementById('tip-bar')) return;
+    const tip = TIPS[Math.floor(Math.random() * TIPS.length)];
+    const bar = document.createElement('div');
+    bar.id = 'tip-bar';
+    if (tip.hf) {
+        const logo = document.createElement('img');
+        logo.src = 'icons/half-full-logo.png';
+        logo.alt = 'Half Full';
+        logo.className = 'tip-logo';
+        bar.appendChild(logo);
+    }
+    const text = document.createElement('span');
+    text.textContent = tip.text;
+    bar.appendChild(text);
+    if (tip.hf) {
+        const link = document.createElement('a');
+        link.href = 'https://half-full.pro';
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = 'Learn more →';
+        link.className = 'tip-link';
+        bar.appendChild(link);
+    }
+    document.body.appendChild(bar);
+}
+
 // Main Logic: Check status immediately
 init();
 
@@ -108,6 +150,7 @@ async function init() {
     if (msgVal === 'SCHEDULED_LIMIT') {
         const limitId = params.get('limitId');
         await showScheduledLimitBlockUI(limitId);
+        appendTipBar();
         return;
     }
 
@@ -136,6 +179,7 @@ async function init() {
             const delay = data.inputDelay || 0;
             const extDuration = data.extensionDuration !== undefined ? data.extensionDuration : 30;
             showCooldownUI(endTime, data.cooldowns[domain], delay, extDuration);
+            appendTipBar();
             return;
         }
     }
@@ -171,6 +215,7 @@ async function init() {
     }
 
     setupNormalUI(delay);
+    appendTipBar();
 }
 
 function isSpecificContent(url) {

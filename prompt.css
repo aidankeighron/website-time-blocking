@@ -177,3 +177,38 @@ input[type="number"]:focus {
 .time-range-block-info p {
     margin: var(--space-5) 0;
 }
+
+/* Rotating tip bar */
+#tip-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background-color: var(--alt-background-neutral);
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    padding: var(--space-5) var(--space-10);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-5);
+    font-size: var(--font-size-xs);
+    color: var(--alt-foreground-neutral);
+}
+
+.tip-logo {
+    height: 14px;
+    width: auto;
+    border-radius: 2px;
+    flex-shrink: 0;
+}
+
+.tip-link {
+    color: var(--accent);
+    text-decoration: none;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.tip-link:hover {
+    text-decoration: underline;
+}

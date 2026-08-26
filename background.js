@@ -8,6 +8,161 @@ const processingTabs = new Set(); // Tracks tabs currently being processed (shor
 const pendingPromptTabs = new Set(); // Tracks tabs redirected to prompt.html, waiting to commit
 const tabsCurrentlyAtPrompt = new Set(); // Tracks tabs that have committed to prompt.html
 
+// --- Half Full Integration ---
+//
+// Scheduled limits can have an optional `halfFullPattern` field:
+//   { id, pattern, type, color }
+// When set, the limit is only applied if today has incomplete tasks matching that pattern
+// in the user's Half Full account. This lets users set "conditional" limits — e.g. block
+// YouTube until all homework tasks are done.
+
+const HF_API_KEY = 'AIzaSyAFllak-Mt7RTf0hFInUMR8-25PeaiHE34';
+const HF_PROJECT_ID = 'alchemy-a816c';
+const HF_TASK_CACHE_TTL_MS = 2 * 60 * 1000; // 2 min cache for today's tasks
+const HF_DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+// Mirrors half-full-desktop's dateToWeekNumber (week IDs map to Firestore week docs).
+function hfDateToWeekNumber(date) {
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    const firstOfJanuary = new Date(d.getFullYear(), 0, 1, 0, 0, 0);
+    firstOfJanuary.setHours(0, 0, 0, 0);
+    const dayNumber = Math.round(
+        (Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) -
+         Date.UTC(firstOfJanuary.getFullYear(), firstOfJanuary.getMonth(), firstOfJanuary.getDate())) / 86400000
+    ) + 1;
+    let weekNumber = Math.ceil((dayNumber + firstOfJanuary.getDay()) / 7);
+    if (weekNumber === 1) {
+        weekNumber = hfDateToWeekNumber(new Date(d.getFullYear() - 1, 11, 31, 0, 0, 0));
+    }
+    return weekNumber;
+}
+
+// Parse a Firestore REST API typed value into a plain JS value.
+function hfParseFirestoreValue(val) {
+    if (!val) return null;
+    if ('stringValue' in val) return val.stringValue;
+    if ('booleanValue' in val) return val.booleanValue;
+    if ('integerValue' in val) return parseInt(val.integerValue, 10);
+    if ('doubleValue' in val) return val.doubleValue;
+    if ('nullValue' in val) return null;
+    if ('mapValue' in val) {
+        const result = {};
+        for (const [k, v] of Object.entries(val.mapValue.fields || {})) {
+            result[k] = hfParseFirestoreValue(v);
+        }
+        return result;
+    }
+    if ('arrayValue' in val) {
+        return (val.arrayValue.values || []).map(hfParseFirestoreValue);
+    }
+    return null;
+}
+
+function hfParseFirestoreDoc(doc) {
+    if (!doc || !doc.fields) return null;
+    const result = {};
+    for (const [key, val] of Object.entries(doc.fields)) {
+        result[key] = hfParseFirestoreValue(val);
+    }
+    return result;
+}
+
+// Returns a valid Firebase ID token, refreshing it if expired. Returns null if not logged in.
+async function hfGetValidToken() {
+    const data = await chrome.storage.local.get({ halfFullAuth: null });
+    const auth = data.halfFullAuth;
+    if (!auth || !auth.refreshToken) return null;
+    if (auth.expiresAt && Date.now() < auth.expiresAt - 60000) return auth.idToken;
+    try {
+        const resp = await fetch(
+            `https://securetoken.googleapis.com/v1/token?key=${HF_API_KEY}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(auth.refreshToken)}`
+            }
+        );
+        if (!resp.ok) return null;
+        const result = await resp.json();
+        const updated = {
+            ...auth,
+            idToken: result.id_token,
+            refreshToken: result.refresh_token,
+            uid: result.user_id,
+            expiresAt: Date.now() + parseInt(result.expires_in, 10) * 1000,
+        };
+        await chrome.storage.local.set({ halfFullAuth: updated });
+        return updated.idToken;
+    } catch {
+        return null;
+    }
+}
+
+// Returns true if today's Half Full tasks contain at least one INCOMPLETE task matching pattern.
+// Uses a short cache to avoid hitting Firestore on every navigation.
+// Conservative fallback: if auth fails or fetch fails, returns true (limit stays active).
+async function hfIsPatternActive(pattern) {
+    if (!pattern || !pattern.pattern) return true;
+    const token = await hfGetValidToken();
+    if (!token) return true;
+    const stored = await chrome.storage.local.get({ halfFullAuth: null, halfFullTaskCache: null });
+    const auth = stored.halfFullAuth;
+    if (!auth || !auth.uid) return true;
+    const now = Date.now();
+    const cache = stored.halfFullTaskCache;
+    let tasks = null;
+    if (cache && cache.fetchedAt && (now - cache.fetchedAt) < HF_TASK_CACHE_TTL_MS) {
+        tasks = cache.tasks;
+    } else {
+        try {
+            const today = new Date();
+            const weekId = `week${hfDateToWeekNumber(today)}`;
+            const url = `https://firestore.googleapis.com/v1/projects/${HF_PROJECT_ID}/databases/(default)/documents/users/${auth.uid}/weeks/${weekId}`;
+            const resp = await fetch(url, {
+                headers: { 'Authorization': `Bearer ${token}` },
+                signal: AbortSignal.timeout(5000),
+            });
+            if (resp.ok) {
+                const doc = await resp.json();
+                const weekData = hfParseFirestoreDoc(doc);
+                const todayName = HF_DAY_NAMES[today.getDay()];
+                const dayTasks = weekData && weekData.tasks && weekData.tasks[todayName];
+                tasks = dayTasks ? Object.values(dayTasks) : [];
+                await chrome.storage.local.set({ halfFullTaskCache: { tasks, fetchedAt: now } });
+            } else if (resp.status === 404) {
+                tasks = [];
+                await chrome.storage.local.set({ halfFullTaskCache: { tasks, fetchedAt: now } });
+            } else {
+                tasks = cache ? cache.tasks : null;
+            }
+        } catch {
+            tasks = cache ? cache.tasks : null;
+        }
+    }
+    if (tasks === null) return true; // can't determine — conservative
+    const pat = pattern.pattern.toLowerCase();
+    const type = pattern.type || 'any';
+    return tasks.some(task => {
+        if (!task || !task.name || task.checked) return false;
+        const name = task.name.toLowerCase();
+        if (type === 'start') return name.startsWith(pat);
+        if (type === 'end') return name.endsWith(pat);
+        return name.includes(pat);
+    });
+}
+
+// Build a map { [limitId]: boolean } for all entries with halfFullPattern that are currently
+// in their time window. Entries without halfFullPattern are omitted (treated as always active).
+async function buildHalfFullPatternMap(entries, now = Date.now()) {
+    const needsCheck = entries.filter(e => e.halfFullPattern && isWindowActive(e, now));
+    if (needsCheck.length === 0) return {};
+    const results = await Promise.all(needsCheck.map(e => hfIsPatternActive(e.halfFullPattern)));
+    const map = {};
+    needsCheck.forEach((e, i) => { map[e.id] = results[i]; });
+    return map;
+}
+
 // --- Scheduled Limits Helpers ---
 //
 // A "Scheduled Limit" is { id, days:[0-6], startHour, startMinute, endHour, endMinute, limitMinutes }.
@@ -152,9 +307,13 @@ function computeUsedSeconds(entry, usage, spanStart, lastLiveness, now = Date.no
 // Returns ALL currently-blocking entries (active window AND (full block OR usage exhausted)).
 // Full-block entries are sorted first so callers picking "the" entry for a message get the
 // most informative one when a full block and a usage-limit happen to overlap.
-function checkScheduledLimits(entries, usage, spanStart, lastLiveness, now = Date.now()) {
+// patternActiveMap: optional { [limitId]: boolean } — false means pattern has no active tasks,
+// so the limit is skipped. Omitted entries default to active (limit applies).
+function checkScheduledLimits(entries, usage, spanStart, lastLiveness, now = Date.now(), patternActiveMap = {}) {
     const blocking = entries.filter(entry => {
         if (!isWindowActive(entry, now)) return false;
+        // Half Full conditional: skip this limit if pattern has no incomplete tasks today.
+        if (entry.halfFullPattern && patternActiveMap[entry.id] === false) return false;
         if (entry.limitMinutes === 0) return true;
         const used = computeUsedSeconds(entry, usage, spanStart, lastLiveness, now);
         return used >= entry.limitMinutes * 60;
@@ -506,7 +665,8 @@ async function checkAccessSerialized(tabId, url, domain) {
     // 0. Check scheduled limits (highest priority — a full block or an exhausted usage cap
     // overrides even an active session; no session can bypass it).
     if (scheduledLimits.length > 0) {
-        const blocking = checkScheduledLimits(scheduledLimits, scheduledUsage, spanStart, lastLiveness, now);
+        const patternActiveMap = await buildHalfFullPatternMap(scheduledLimits, now);
+        const blocking = checkScheduledLimits(scheduledLimits, scheduledUsage, spanStart, lastLiveness, now, patternActiveMap);
         if (blocking.length > 0) {
             const entry = blocking[0];
             const promptUrl = chrome.runtime.getURL(
@@ -786,7 +946,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         const data = await chrome.storage.local.get({ scheduledLimits: [], targetSites: DEFAULT_TARGETS });
         const entries = data.scheduledLimits;
 
-        const blocking = checkScheduledLimits(entries, usage, spanStart, lastLiveness, now);
+        const patternActiveMap = await buildHalfFullPatternMap(entries, now);
+        const blocking = checkScheduledLimits(entries, usage, spanStart, lastLiveness, now, patternActiveMap);
         if (blocking.length > 0) {
             const entry = blocking[0];
             const targetSites = data.targetSites;
@@ -836,6 +997,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             .then(() => syncScheduledLimitAlarms())
             .then(() => sendResponse({}))
             .catch(() => sendResponse({}));
+        return true;
+    } else if (message.action === 'halfFullAuthChanged') {
+        // Clear the task cache so the next check fetches fresh data.
+        chrome.storage.local.remove('halfFullTaskCache').finally(() => sendResponse({}));
         return true;
     }
 });
