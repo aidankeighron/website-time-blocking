@@ -104,24 +104,10 @@
                 <img src="icons/half-full-logo.png" alt="Half Full" class="hf-logo-inline">
                 Half Full Integration
             </h2>
-            <div class="hf-feature-box">
-                <p class="hf-feature-title">What is Half Full?</p>
-                <p class="hint">
-                    <a href="https://half-full.pro" target="_blank" class="hf-link">Half Full</a> is a productivity and task management app.
-                    By linking your account, you can make time-blocking limits <strong>conditional</strong> —
-                    a limit only applies while you still have unfinished tasks matching a pattern.
-                </p>
-                <p class="hint">
-                    <strong>Example:</strong> Block YouTube from 1:00–5:00 PM, but only when you still have
-                    homework tasks pending. Once you check off all your homework in Half Full, the limit
-                    automatically lifts.
-                </p>
-                <p class="hint">
-                    Patterns in Half Full use simple text matching (starts-with, ends-with, or contains).
-                    When creating a scheduled limit you can pick a pattern from the dropdown — the limit will
-                    only activate if today has at least one incomplete task matching that pattern.
-                </p>
-            </div>
+            <p class="hf-summary">
+                Make limits conditional on your Half Full tasks, they lift automatically once matching tasks are done.
+                <button id="hf-info-btn" class="info-icon" type="button" aria-label="More about Half Full">i</button>
+            </p>
 
             <div id="hf-logged-out">
                 <div class="config-item">
@@ -139,6 +125,32 @@
             <div id="hf-logged-in" style="display:none;">
                 <p class="hint" id="hf-user-label">Signed in as …</p>
                 <button id="hf-logout-btn" class="btn-secondary">Sign Out</button>
+            </div>
+
+            <p class="hint hf-bottom-link">
+                Don't have Half Full? <a href="https://half-full.pro" target="_blank" class="hf-link">Get it at half-full.pro</a>
+            </p>
+        </div>
+
+        <div id="hf-info-modal" class="modal-overlay" style="display:none;">
+            <div class="modal-box">
+                <h2>About Half Full</h2>
+                <p class="hint">
+                    <a href="https://half-full.pro" target="_blank" class="hf-link">Half Full</a> is a task manager.
+                    Linking your account lets you make time blocking limits conditional a limit only
+                    applies while you still have unfinished tasks matching a pattern.
+                </p>
+                <p class="hint">
+                    <strong>Example:</strong> Block YouTube from 1:00–5:00 PM, but only while homework tasks are pending.
+                    Once you check off all your homework in Half Full, the limit automatically lifts.
+                </p>
+                <p class="hint">
+                    Patterns match by starts-with, ends-with, or contains. Pick one from the dropdown when creating a
+                    scheduled limit, it only activates if today has at least one incomplete task matching it.
+                </p>
+                <div class="modal-actions">
+                    <button id="hf-info-close-btn" class="btn-secondary" type="button">Close</button>
+                </div>
             </div>
         </div>
 

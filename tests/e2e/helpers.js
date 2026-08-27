@@ -60,7 +60,7 @@ async function expectAllowed(page, url) {
         .then(() => true)
         .catch(() => false);
     if (blocked) {
-        throw new Error(`expectAllowed: extension unexpectedly blocked ${url} — landed on ${page.url()}`);
+        throw new Error(`expectAllowed: extension unexpectedly blocked ${url}: landed on ${page.url()}`);
     }
     // Confirm we're at the right domain.
     expect(new URL(page.url()).hostname).toContain(

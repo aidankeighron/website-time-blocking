@@ -4,7 +4,8 @@
     --background:             hsl(0, 0%, 15%);
     --alt-background:         hsl(280, 50%, 30%);
     --alt-foreground:         hsl(280, 75%, 75%);
-    --accent:                 hsl(280, 75%, 50%);
+    --accent:                 hsl(280, 75%, 42%);
+    --accent-text:            hsl(280, 70%, 82%);
     --alt-accent:             hsl(280, 75%, 90%);
     --alt-background-neutral: hsl(0, 0%, 30%);
     --alt-foreground-neutral: hsl(0, 0%, 75%);
@@ -44,7 +45,7 @@
 
     /* Borders */
     --border-default: 1px solid var(--foreground);
-    --border-accent:  2px solid var(--accent);
+    --border-accent:  2px solid var(--accent-text);
 
     /* Shadows — floating/elevated elements only */
     --shadow-float: 0 4px 10px rgba(0, 0, 0, 0.2);

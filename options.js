@@ -9,6 +9,12 @@ document.getElementById('sl-save-btn').addEventListener('click', saveScheduledLi
 document.getElementById('sl-cancel-btn').addEventListener('click', closeScheduledLimitModal);
 document.getElementById('hf-login-btn').addEventListener('click', halfFullSignIn);
 document.getElementById('hf-logout-btn').addEventListener('click', halfFullSignOut);
+document.getElementById('hf-info-btn').addEventListener('click', () => {
+    document.getElementById('hf-info-modal').style.display = 'flex';
+});
+document.getElementById('hf-info-close-btn').addEventListener('click', () => {
+    document.getElementById('hf-info-modal').style.display = 'none';
+});
 
 // Day-of-week toggle buttons: mirror checked state onto the label for styling.
 document.querySelectorAll('.day-cb').forEach(cb => {
