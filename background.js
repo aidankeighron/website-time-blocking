@@ -7,6 +7,12 @@ const DEFAULT_TARGETS = ['instagram.com', 'reddit.com', 'youtube.com'];
 const processingTabs = new Set(); // Tracks tabs currently being processed (short-lived lock)
 const pendingPromptTabs = new Set(); // Tracks tabs redirected to prompt.html, waiting to commit
 const tabsCurrentlyAtPrompt = new Set(); // Tracks tabs that have committed to prompt.html
+// One-shot "has THIS redirect attempt landed at least once" marker per tab, reset at the start
+// of each redirectToPrompt() call. Unlike tabsCurrentlyAtPrompt (cleared the moment the user
+// navigates away, e.g. after extending/finishing), this stays set once landed so the delayed
+// verification in redirectToPrompt can tell "never arrived, retry" apart from "arrived, then
+// the user legitimately moved on" — those look identical if you only check the tab's current URL.
+const confirmedPromptLandings = new Set();
 
 // --- Half Full Integration ---
 //
@@ -533,6 +539,7 @@ function getDomain(url) {
 // observe the navigation normally.
 async function redirectToPrompt(tabId, promptUrl) {
     pendingPromptTabs.add(tabId);
+    confirmedPromptLandings.delete(tabId);
     const data = await chrome.storage.local.get('__testPromptBase');
     let finalUrl = promptUrl;
     if (data.__testPromptBase) {
@@ -542,6 +549,26 @@ async function redirectToPrompt(tabId, promptUrl) {
         } catch {}
     }
     chrome.tabs.update(tabId, { url: finalUrl });
+
+    // Typing a bare domain (e.g. "youtube.com") triggers the site's own multi-hop redirect
+    // chain (http->https, apex->www) that's still in flight at the network layer when we issue
+    // the update above. Chrome sometimes lets that in-progress navigation win instead of our
+    // tabs.update() call, silently dropping the block (page loads normally; a manual reload
+    // works because a reload has no competing in-flight redirect to race against). Verify the
+    // redirect actually landed shortly after, and retry once against the tab's now-settled URL
+    // if it didn't.
+    const promptBase = finalUrl.split('?')[0];
+    setTimeout(async () => {
+        // Landed at some point since this call (even if the user has since moved on by
+        // extending/finishing) — nothing to retry.
+        if (confirmedPromptLandings.has(tabId)) return;
+        try {
+            const tab = await chrome.tabs.get(tabId);
+            if (!tab.url || !tab.url.startsWith(promptBase)) {
+                chrome.tabs.update(tabId, { url: finalUrl });
+            }
+        } catch { /* tab closed or inaccessible — nothing to retry */ }
+    }, 500);
 }
 
 // Check if url matches target
@@ -566,6 +593,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     // the redirect is complete, so a later event for this tab should be treated fresh.
     if (currentUrl.startsWith(chrome.runtime.getURL('prompt.html'))) {
         tabsCurrentlyAtPrompt.add(tabId);
+        confirmedPromptLandings.add(tabId);
         processingTabs.delete(tabId);
         return;
     }
@@ -607,9 +635,11 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     }
 });
 
-// Supplementary navigation listener for environments where tabs.onUpdated fires unreliably
-// for certain navigation types (e.g. Playwright's Juggler protocol in Firefox).
-chrome.webNavigation.onCommitted.addListener(async ({ tabId, url, frameId }) => {
+// Supplementary navigation listener for cases where tabs.onUpdated fires unreliably or not at
+// all: Playwright's Juggler protocol in Firefox, and — via onHistoryStateUpdated below — SPA
+// route changes (pushState/replaceState) on target sites like YouTube search, video-to-video
+// navigation, and Reddit/Instagram in-app routing, none of which are full page navigations.
+async function handleWebNavigationEvent({ tabId, url, frameId }) {
     if (frameId !== 0) return;
     if (!url) return;
     if (url.startsWith('chrome-extension://') || url.startsWith('moz-extension://')) return;
@@ -627,7 +657,13 @@ chrome.webNavigation.onCommitted.addListener(async ({ tabId, url, frameId }) => 
     } finally {
         setTimeout(() => { processingTabs.delete(tabId); }, 1000);
     }
-});
+}
+
+chrome.webNavigation.onCommitted.addListener(handleWebNavigationEvent);
+// onCommitted never fires for History API (pushState/replaceState) navigations — this is the
+// dedicated event for those, needed because YouTube/Reddit/Instagram are SPAs that change the
+// URL client-side (e.g. YouTube search, clicking between videos) without a full navigation.
+chrome.webNavigation.onHistoryStateUpdated.addListener(handleWebNavigationEvent);
 
 // activeSessions and cooldowns are global objects in storage. Since we read, modify, and 
 // write them back entirely, concurrent operations across DIFFERENT domains can still clobber 
@@ -977,6 +1013,37 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     pendingPromptTabs.delete(tabId);
     tabsCurrentlyAtPrompt.delete(tabId);
     processingTabs.delete(tabId);
+    confirmedPromptLandings.delete(tabId);
+});
+
+// Chrome's "Preload pages for faster browsing" (Settings > Performance) can prerender a
+// high-confidence omnibox/autocomplete destination in the background, then swap it into the
+// visible tab the instant you press Enter — as a tab REPLACEMENT (new internal tab ID), not a
+// normal navigation. None of the navigation listeners above fire for that: there's no loading
+// phase to intercept, since the page is already fully rendered before it appears. This is why
+// blocking silently never happens for autocomplete-selected navigations specifically, while a
+// typed-out URL or a reload (both normal navigations) work fine.
+chrome.tabs.onReplaced.addListener(async (addedTabId, removedTabId) => {
+    pendingPromptTabs.delete(removedTabId);
+    tabsCurrentlyAtPrompt.delete(removedTabId);
+    processingTabs.delete(removedTabId);
+    confirmedPromptLandings.delete(removedTabId);
+
+    if (processingTabs.has(addedTabId)) return;
+    try {
+        const tab = await chrome.tabs.get(addedTabId);
+        if (!tab.url) return;
+        const domain = getDomain(tab.url);
+        if (!domain) return;
+        processingTabs.add(addedTabId);
+        try {
+            if (await isTargetSite(tab.url)) {
+                await checkAccess(addedTabId, tab.url, domain);
+            }
+        } finally {
+            setTimeout(() => processingTabs.delete(addedTabId), 1000);
+        }
+    } catch { /* tab may already be gone */ }
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -1000,6 +1067,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true;
     } else if (message.action === 'halfFullAuthChanged') {
         // Clear the task cache so the next check fetches fresh data.
+        chrome.storage.local.remove('halfFullTaskCache').finally(() => sendResponse({}));
+        return true;
+    } else if (message.action === 'refreshHalfFullCache') {
+        // "Check again" button on a Half-Full-conditional block screen — clear the cache so the
+        // navigation that follows re-fetches today's tasks instead of reusing the up-to-2-minute-
+        // old cached result.
         chrome.storage.local.remove('halfFullTaskCache').finally(() => sendResponse({}));
         return true;
     }

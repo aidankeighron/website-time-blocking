@@ -146,6 +146,8 @@ li {
     border-radius: var(--radius-lg);
     padding: var(--space-12);
     width: 88%;
+    max-width: 480px;
+    box-sizing: border-box;
 }
 
 .modal-box h2 {
@@ -274,10 +276,39 @@ select {
     font-size: var(--font-size-base);
     outline: none;
     flex-grow: 1;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 select:focus {
     border: var(--border-accent);
+}
+
+/* Half Full condition row: label above the dropdown instead of side-by-side, since pattern
+   names are unbounded-length and would otherwise force the row wider than the modal. */
+#sl-hf-pattern-row {
+    flex-direction: column;
+    align-items: stretch;
+}
+
+#sl-hf-pattern-row label {
+    margin-bottom: var(--space-5);
+}
+
+/* .hint's global negative margin-top is meant to pull a hint up toward a preceding block-flow
+   row; here it's a flex child stacked directly under the select, so that negative margin would
+   pull it up over the select instead. Override with normal positive spacing. */
+#sl-hf-pattern-row .hint {
+    margin-top: var(--space-5);
+}
+
+#sl-hf-pattern {
+    width: 100%;
+    font-size: var(--font-size-sm);
 }
 
 /* Scheduled limit list items — wrap for edit+remove buttons */
@@ -290,6 +321,7 @@ select:focus {
 .time-range-label-wrap {
     display: flex;
     flex-direction: column;
+    align-items: flex-start;
     gap: var(--space-4);
     flex: 1;
     min-width: 0;
@@ -356,7 +388,6 @@ select:focus {
 .hf-pattern-badge {
     display: inline-block;
     font-size: var(--font-size-xs);
-    border: 1px solid;
     border-radius: var(--radius-sm);
     padding: 1px var(--space-4);
     white-space: nowrap;

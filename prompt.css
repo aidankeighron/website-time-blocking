@@ -134,7 +134,8 @@ input[type="number"]:focus {
 }
 
 #extend-btn,
-#finish-btn {
+#finish-btn,
+#hf-recheck-btn {
     background-color: var(--alt-background-neutral);
     color: var(--foreground);
     border: none;
@@ -149,10 +150,18 @@ input[type="number"]:focus {
 }
 
 #extend-btn:hover,
-#finish-btn:hover  { animation: pulsate 0.25s ease both; }
+#finish-btn:hover,
+#hf-recheck-btn:hover  { animation: pulsate 0.25s ease both; }
 
 #extend-btn:active,
-#finish-btn:active { animation: click-press 0.25s ease both; }
+#finish-btn:active,
+#hf-recheck-btn:active { animation: click-press 0.25s ease both; }
+
+#hf-recheck-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+    animation: none;
+}
 
 .version {
     color: var(--alt-foreground-neutral);

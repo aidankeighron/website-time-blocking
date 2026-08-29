@@ -7,7 +7,10 @@ document.getElementById('save-config').addEventListener('click', saveOptions);
 document.getElementById('add-scheduled-limit-btn').addEventListener('click', () => openScheduledLimitModal(null));
 document.getElementById('sl-save-btn').addEventListener('click', saveScheduledLimit);
 document.getElementById('sl-cancel-btn').addEventListener('click', closeScheduledLimitModal);
-document.getElementById('hf-login-btn').addEventListener('click', halfFullSignIn);
+document.getElementById('hf-login-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    halfFullSignIn();
+});
 document.getElementById('hf-logout-btn').addEventListener('click', halfFullSignOut);
 document.getElementById('hf-info-btn').addEventListener('click', () => {
     document.getElementById('hf-info-modal').style.display = 'flex';
@@ -114,10 +117,14 @@ function showStatus(msg, type = 'success') {
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-// Half Full pattern color → CSS hex (mirrors half-full-desktop constants)
+// Half Full pattern color → background chip color. Darkened/adjusted from half-full-desktop's
+// raw brand hues so white text on top always clears WCAG AA (4.5:1) — the original hex values
+// (e.g. purple #7036E2, darkPurple #3B00B2, blue #0060E5) are too light/saturated to read as
+// plain text on this app's dark backgrounds, so pattern colors are rendered as solid chips
+// (colored background + white text) instead, verified to clear >=4.5:1 individually.
 const HF_PATTERN_COLORS = {
-    red: '#F04242', yellow: '#CCAA00', green: '#1DC91D', purple: '#7036E2',
-    orange: '#CC8800', darkPurple: '#3B00B2', blue: '#0060E5', default: '#888888',
+    red: '#a51d1d', yellow: '#7f6c0a', green: '#1b7e1b', purple: '#5a23c7',
+    orange: '#9b6508', darkPurple: '#330a7b', blue: '#0b5bcb', default: '#5c5c5c',
 };
 
 function hfPatternColor(colorName) {
@@ -159,8 +166,8 @@ function renderScheduledLimitList(entries) {
         if (entry.halfFullPattern) {
             const patBadge = document.createElement('span');
             patBadge.className = 'hf-pattern-badge';
-            patBadge.style.borderColor = hfPatternColor(entry.halfFullPattern.color);
-            patBadge.style.color = hfPatternColor(entry.halfFullPattern.color);
+            patBadge.style.backgroundColor = hfPatternColor(entry.halfFullPattern.color);
+            patBadge.style.color = '#fff';
             patBadge.textContent = `⊕ if "${entry.halfFullPattern.pattern}"`;
             patBadge.title = `Only active when tasks matching "${entry.halfFullPattern.pattern}" are incomplete`;
             labelWrap.appendChild(patBadge);
@@ -213,7 +220,7 @@ function populatePatternDropdown(selectedPatternId = '') {
         const hint   = document.getElementById('sl-hf-pattern-hint');
 
         // Clear all options except the "no condition" placeholder
-        select.innerHTML = '<option value="">Always active — no condition</option>';
+        select.innerHTML = '<option value="">Always active</option>';
 
         if (!data.halfFullAuth) {
             hint.style.display = 'block';
@@ -230,7 +237,8 @@ function populatePatternDropdown(selectedPatternId = '') {
             // Show the pattern keyword and its match type in the dropdown
             const typeLabel = p.type === 'start' ? 'starts with' : p.type === 'end' ? 'ends with' : 'contains';
             opt.textContent = `${p.pattern}  (${typeLabel})`;
-            opt.style.color = hfPatternColor(p.color);
+            opt.style.backgroundColor = hfPatternColor(p.color);
+            opt.style.color = '#fff';
             if (p.id === selectedPatternId) opt.selected = true;
             select.appendChild(opt);
         });
@@ -282,7 +290,7 @@ function saveScheduledLimit() {
     if (!startVal || !endVal) { errorEl.textContent = 'Please set both start and end times.'; return; }
     if (startVal === endVal) { errorEl.textContent = 'Start and end times cannot be the same.'; return; }
     if (!Number.isInteger(limitVal) || limitVal < 0) {
-        errorEl.textContent = 'Please enter minutes allowed (0 or more — 0 means a full block).';
+        errorEl.textContent = 'Please enter minutes allowed (0 or more: 0 means a full block).';
         return;
     }
 

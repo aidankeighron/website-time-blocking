@@ -129,6 +129,41 @@ test('Reddit: single_url session blocks navigation to homepage (Finished)', asyn
     await expect(page.locator('#error-msg')).toContainText('Finished');
 });
 
+// Coverage for chrome.webNavigation.onHistoryStateUpdated: SPA route changes (History API
+// pushState/replaceState, as used by YouTube search, video-to-video navigation, and
+// Reddit/Instagram in-app routing) never fire chrome.webNavigation.onCommitted, and Chrome
+// doesn't guarantee chrome.tabs.onUpdated fires for every one either — onHistoryStateUpdated
+// is the dedicated, reliable signal for this navigation type. This simple single-pushState
+// case happens to also be caught by onUpdated in this test harness, so it won't fail without
+// the fix, but it locks in that the new listener is wired up and doesn't regress the
+// single_url "Finished" behavior.
+test('Reddit: single_url session ends on an in-app (pushState) navigation away, not just a full reload', async ({ page, storage }) => {
+    const now = Date.now();
+    await storage.set({
+        activeSessions: {
+            'reddit.com': {
+                type: 'single_url',
+                startTime: now,
+                targetUrl: POST_A,
+                timeRangeLastCheck: now,
+            },
+        },
+    });
+    await expectAllowed(page, POST_A);
+
+    // Simulate an in-app SPA navigation away from the post (no full page load).
+    const isBlockedUrl = (u) => {
+        const href = typeof u === 'string' ? u : u.href;
+        return href.includes('prompt.html') || href.includes('playwright-ext-prompt.invalid');
+    };
+    await Promise.all([
+        page.waitForURL(isBlockedUrl, { timeout: 10000 }),
+        page.evaluate(() => window.history.pushState(null, '', '/')),
+    ]);
+    expect(isBlockedUrl(page.url())).toBe(true);
+    await expect(page.locator('#error-msg')).toContainText('Finished');
+});
+
 // ── 4. After single_url session ends, the next navigation requires a new session ─
 
 test('Reddit: after single_url ends, next post access requires new session', async ({ page, context, storage }) => {

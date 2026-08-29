@@ -82,7 +82,7 @@
                 <div class="config-item" id="sl-hf-pattern-row">
                     <label for="sl-hf-pattern">Half Full condition (optional):</label>
                     <select id="sl-hf-pattern">
-                        <option value="">Always active — no condition</option>
+                        <option value="">Always active</option>
                     </select>
                     <p class="hint" id="sl-hf-pattern-hint" style="display:none;">
                         This limit only applies when you have incomplete tasks matching the selected
@@ -110,16 +110,18 @@
             </p>
 
             <div id="hf-logged-out">
-                <div class="config-item">
-                    <label for="hf-email">Half Full email:</label>
-                    <input type="email" id="hf-email" placeholder="you@example.com">
-                </div>
-                <div class="config-item">
-                    <label for="hf-password">Password:</label>
-                    <input type="password" id="hf-password" placeholder="••••••••">
-                </div>
-                <div id="hf-login-error" class="error"></div>
-                <button id="hf-login-btn">Sign In with Half Full</button>
+                <form id="hf-login-form">
+                    <div class="config-item">
+                        <label for="hf-email">Half Full email:</label>
+                        <input type="email" id="hf-email" name="username" autocomplete="username" placeholder="you@example.com">
+                    </div>
+                    <div class="config-item">
+                        <label for="hf-password">Password:</label>
+                        <input type="password" id="hf-password" name="current-password" autocomplete="current-password" placeholder="••••••••">
+                    </div>
+                    <div id="hf-login-error" class="error"></div>
+                    <button id="hf-login-btn" type="submit">Sign In with Half Full</button>
+                </form>
             </div>
 
             <div id="hf-logged-in" style="display:none;">
@@ -128,7 +130,7 @@
             </div>
 
             <p class="hint hf-bottom-link">
-                Don't have Half Full? <a href="https://half-full.pro" target="_blank" class="hf-link">Get it at half-full.pro</a>
+                Don't have Half Full? <a href="https://halffull.pro" target="_blank" class="hf-link">Get it at halffull.pro</a>
             </p>
         </div>
 
@@ -136,17 +138,13 @@
             <div class="modal-box">
                 <h2>About Half Full</h2>
                 <p class="hint">
-                    <a href="https://half-full.pro" target="_blank" class="hf-link">Half Full</a> is a task manager.
-                    Linking your account lets you make time blocking limits conditional a limit only
+                    <a href="https://halffull.pro" target="_blank" class="hf-link">Half Full</a> is a task manager.
+                    Linking your account lets you make time blocking limits conditional so a limit only
                     applies while you still have unfinished tasks matching a pattern.
                 </p>
                 <p class="hint">
                     <strong>Example:</strong> Block YouTube from 1:00–5:00 PM, but only while homework tasks are pending.
                     Once you check off all your homework in Half Full, the limit automatically lifts.
-                </p>
-                <p class="hint">
-                    Patterns match by starts-with, ends-with, or contains. Pick one from the dropdown when creating a
-                    scheduled limit, it only activates if today has at least one incomplete task matching it.
                 </p>
                 <div class="modal-actions">
                     <button id="hf-info-close-btn" class="btn-secondary" type="button">Close</button>

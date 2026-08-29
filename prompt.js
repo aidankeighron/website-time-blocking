@@ -50,16 +50,16 @@ document.getElementById('target-site-display').textContent = `Accessing: ${hostn
 
 // Rotating tips shown at the bottom of every blocking screen
 const TIPS = [
-    { text: 'Tip: Use Duration mode to set a timer — the site blocks when time runs out.' },
+    { text: 'Tip: Use Duration mode to set a timer, the site blocks when time runs out.' },
     { text: 'Tip: Count mode on YouTube lets you limit yourself to a set number of videos.' },
-    { text: 'Tip: Scheduled Limits block sites during specific hours — like a daily focus window.' },
+    { text: 'Tip: Scheduled Limits block sites during specific hours, like a daily focus window.' },
     { text: 'Tip: The Extend button grants a brief extra window without resetting your cooldown.' },
     { text: 'Tip: "Finish Video/Post" lets you wrap up what you were watching before locking out.' },
-    { text: 'Tip: Input Delay adds a pause before you can confirm — a moment to reconsider.' },
+    { text: 'Tip: Input Delay adds a pause before you can confirm, a moment to reconsider.' },
     { text: 'Tip: Add multiple sites to the block list and manage them all from Settings.' },
     { text: 'Tip: Open Settings to adjust cooldown length, input delay, and extension duration.' },
     { text: 'Connect Half Full to make limits conditional on your task list.', hf: true },
-    { text: 'Half Full is a task manager — when tasks are done, your limits can lift automatically.', hf: true },
+    { text: 'Half Full is a task manager, when tasks are done, your limits can lift automatically.', hf: true },
     { text: 'Earn your screen time: link Half Full so limits lift once your tasks are checked off.', hf: true },
 ];
 
@@ -80,7 +80,7 @@ function appendTipBar() {
     bar.appendChild(text);
     if (tip.hf) {
         const link = document.createElement('a');
-        link.href = 'https://half-full.pro';
+        link.href = 'https://halffull.pro';
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
         link.textContent = 'Learn more →';
@@ -110,6 +110,7 @@ function formatScheduledLimitDaysLocal(days) {
 async function showScheduledLimitBlockUI(limitId) {
     const data = await _storageGet({ scheduledLimits: [] });
     const entry = data.scheduledLimits.find(e => e.id === limitId);
+    const hfPattern = entry && entry.halfFullPattern;
 
     let detailHtml;
     if (entry) {
@@ -117,20 +118,27 @@ async function showScheduledLimitBlockUI(limitId) {
         const endStr   = formatTimeLocal(entry.endHour, entry.endMinute);
         const isOvernight = (entry.endHour * 60 + entry.endMinute) <= (entry.startHour * 60 + entry.startMinute);
         const reasonLine = entry.limitMinutes === 0
-            ? 'This window is fully blocked — no browsing time is allowed.'
+            ? 'This window is fully blocked, no browsing time is allowed.'
             : `${entry.limitMinutes}-minute limit used up.`;
+        const waitLine = hfPattern
+            ? `This lifts as soon as you finish the "${hfPattern.pattern}" task(s) in Half Full — or waits until ${endStr}, whichever comes first.`
+            : `This is not a countdown you can wait out early, access resumes at ${endStr}.`;
         detailHtml = `
             <div class="time-range-block-info">
                 <p><strong>${formatScheduledLimitDaysLocal(entry.days)} · ${startStr} – ${endStr}${isOvernight ? ' (overnight)' : ''}</strong></p>
                 <p>${reasonLine}</p>
-                <p class="small-text">This is not a countdown you can wait out early — access resumes at ${endStr}.</p>
+                <p class="small-text">${waitLine}</p>
                 <p class="small-text">All target sites are blocked until then. No session can bypass it.</p>
-            </div>`;
+            </div>
+            ${hfPattern ? `
+            <div class="extension-section">
+                <button id="hf-recheck-btn">Finished? Check again</button>
+            </div>` : ''}`;
     } else {
         detailHtml = `
             <div class="time-range-block-info">
                 <p>A scheduled limit is active.</p>
-                <p class="small-text">This is not a countdown you can wait out early — access resumes when this window ends.</p>
+                <p class="small-text">This is not a countdown you can wait out early, access resumes when this window ends.</p>
                 <p class="small-text">All target sites are blocked until then. No session can bypass it.</p>
             </div>`;
     }
@@ -142,6 +150,16 @@ async function showScheduledLimitBlockUI(limitId) {
             ${detailHtml}
         </div>
     ` + '<link rel="stylesheet" href="prompt.css">';
+
+    if (hfPattern) {
+        const recheckBtn = document.getElementById('hf-recheck-btn');
+        recheckBtn.addEventListener('click', async () => {
+            recheckBtn.disabled = true;
+            recheckBtn.textContent = 'Checking…';
+            await _sendMessage({ action: 'refreshHalfFullCache' });
+            window.location.replace(intendedUrl);
+        });
+    }
 }
 
 async function init() {
