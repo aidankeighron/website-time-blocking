@@ -2,7 +2,7 @@
 // Test files access storage via global.__store__ and listeners via global.__listeners__.
 
 const store = {};
-const listeners = { onUpdated: [], onAlarm: [], onMessage: [], onRemoved: [], onCommitted: [], onInstalled: [], onStartup: [] };
+const listeners = { onUpdated: [], onAlarm: [], onMessage: [], onRemoved: [], onCommitted: [], onHistoryStateUpdated: [], onReplaced: [], onInstalled: [], onStartup: [] };
 const mockFns = {};
 
 function makeMockFn(key) {
@@ -51,6 +51,9 @@ global.__resetChrome__ = function () {
     // Restore query default
     mockFns['tabs.update'].mockResolvedValue(undefined);
     mockFns['tabs.query'].mockResolvedValue([]);
+    // Default: empty URL, matching the real API's momentary state during a tab-ID swap — tests
+    // covering the onReplaced retry path override this per-call via mockResolvedValueOnce.
+    mockFns['tabs.get'].mockResolvedValue({ url: '' });
     mockFns['alarms.create'].mockResolvedValue(undefined);
     mockFns['alarms.clear'].mockResolvedValue(true);
     mockFns['alarms.getAll'].mockResolvedValue([]);
@@ -59,11 +62,13 @@ global.__resetChrome__ = function () {
 
 makeMockFn('tabs.update');
 makeMockFn('tabs.query');
+makeMockFn('tabs.get');
 makeMockFn('alarms.create');
 makeMockFn('alarms.clear');
 makeMockFn('alarms.getAll');
 mockFns['tabs.update'].mockResolvedValue(undefined);
 mockFns['tabs.query'].mockResolvedValue([]);
+mockFns['tabs.get'].mockResolvedValue({ url: '' });
 mockFns['alarms.create'].mockResolvedValue(undefined);
 mockFns['alarms.clear'].mockResolvedValue(true);
 mockFns['alarms.getAll'].mockResolvedValue([]);
@@ -113,10 +118,18 @@ global.chrome = {
         },
     },
     tabs: {
-        onUpdated: { addListener: (fn) => listeners.onUpdated.push(fn) },
+        onUpdated: {
+            addListener: (fn) => listeners.onUpdated.push(fn),
+            removeListener: (fn) => {
+                const idx = listeners.onUpdated.indexOf(fn);
+                if (idx !== -1) listeners.onUpdated.splice(idx, 1);
+            },
+        },
         onRemoved: { addListener: (fn) => listeners.onRemoved.push(fn) },
+        onReplaced: { addListener: (fn) => listeners.onReplaced.push(fn) },
         update: (...args) => mockFns['tabs.update'](...args),
         query: (...args) => mockFns['tabs.query'](...args),
+        get: (...args) => mockFns['tabs.get'](...args),
     },
     alarms: {
         onAlarm: { addListener: (fn) => listeners.onAlarm.push(fn) },
@@ -126,5 +139,6 @@ global.chrome = {
     },
     webNavigation: {
         onCommitted: { addListener: (fn) => listeners.onCommitted.push(fn) },
+        onHistoryStateUpdated: { addListener: (fn) => listeners.onHistoryStateUpdated.push(fn) },
     },
 };

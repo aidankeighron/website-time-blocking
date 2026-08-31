@@ -22,6 +22,12 @@ function fireRemoved(tabId) {
     global.__listeners__.onRemoved.forEach(fn => fn(tabId));
 }
 
+// Fire a tabs.onReplaced event and wait for async processing to complete.
+async function fireReplaced(addedTabId, removedTabId) {
+    const handlers = global.__listeners__.onReplaced;
+    await Promise.all(handlers.map(fn => fn(addedTabId, removedTabId)));
+}
+
 // Fire a runtime.onMessage event and return the response.
 function fireMessage(message, sender = {}) {
     return new Promise((resolve) => {
@@ -127,6 +133,7 @@ module.exports = {
     loadBackground,
     fireUpdated,
     fireRemoved,
+    fireReplaced,
     fireCommitted,
     fireMessage,
     fireAlarm,

@@ -7,12 +7,11 @@ const DEFAULT_TARGETS = ['instagram.com', 'reddit.com', 'youtube.com'];
 const processingTabs = new Set(); // Tracks tabs currently being processed (short-lived lock)
 const pendingPromptTabs = new Set(); // Tracks tabs redirected to prompt.html, waiting to commit
 const tabsCurrentlyAtPrompt = new Set(); // Tracks tabs that have committed to prompt.html
-// One-shot "has THIS redirect attempt landed at least once" marker per tab, reset at the start
-// of each redirectToPrompt() call. Unlike tabsCurrentlyAtPrompt (cleared the moment the user
-// navigates away, e.g. after extending/finishing), this stays set once landed so the delayed
-// verification in redirectToPrompt can tell "never arrived, retry" apart from "arrived, then
-// the user legitimately moved on" — those look identical if you only check the tab's current URL.
-const confirmedPromptLandings = new Set();
+
+// TEMPORARY — see BLOCKING_UI_BUG_HANDOFF.md action item 6. Remove every `if (WTB_DEBUG)`
+// block (and this line) once the user confirms the autofill/prerender-navigation fix on their
+// next repro.
+const WTB_DEBUG = true;
 
 // --- Half Full Integration ---
 //
@@ -74,12 +73,23 @@ function hfParseFirestoreDoc(doc) {
     return result;
 }
 
+// Dedupes concurrent refresh attempts — buildHalfFullPatternMap can call hfGetValidToken for
+// several patterns at once with an expired token; without this each call independently hits
+// the refresh endpoint and independently writes the result, racing each other.
+let hfTokenRefreshInFlight = null;
+
 // Returns a valid Firebase ID token, refreshing it if expired. Returns null if not logged in.
 async function hfGetValidToken() {
     const data = await chrome.storage.local.get({ halfFullAuth: null });
     const auth = data.halfFullAuth;
     if (!auth || !auth.refreshToken) return null;
     if (auth.expiresAt && Date.now() < auth.expiresAt - 60000) return auth.idToken;
+    if (hfTokenRefreshInFlight) return hfTokenRefreshInFlight;
+    hfTokenRefreshInFlight = hfRefreshTokenNow(auth).finally(() => { hfTokenRefreshInFlight = null; });
+    return hfTokenRefreshInFlight;
+}
+
+async function hfRefreshTokenNow(auth) {
     try {
         const resp = await fetch(
             `https://securetoken.googleapis.com/v1/token?key=${HF_API_KEY}`,
@@ -89,7 +99,14 @@ async function hfGetValidToken() {
                 body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(auth.refreshToken)}`
             }
         );
-        if (!resp.ok) return null;
+        if (!resp.ok) {
+            // The server responded (this isn't a network failure) but rejected the refresh —
+            // the token is genuinely invalid/revoked, not just temporarily unreachable. Sign
+            // out so the UI reflects reality (prompts re-login) instead of silently claiming to
+            // be signed in indefinitely while every pattern check quietly no-ops.
+            await chrome.storage.local.remove(['halfFullAuth', 'halfFullPatterns', 'halfFullTaskCache']);
+            return null;
+        }
         const result = await resp.json();
         const updated = {
             ...auth,
@@ -101,6 +118,9 @@ async function hfGetValidToken() {
         await chrome.storage.local.set({ halfFullAuth: updated });
         return updated.idToken;
     } catch {
+        // Network-level failure (offline, timeout, DNS) — likely transient. Leave auth intact
+        // and just report "no valid token right now" for this one check; hfIsPatternActive's
+        // own conservative fallback (limit stays active) handles the rest.
         return null;
     }
 }
@@ -140,10 +160,16 @@ async function hfIsPatternActive(pattern) {
                 tasks = [];
                 await chrome.storage.local.set({ halfFullTaskCache: { tasks, fetchedAt: now } });
             } else {
-                tasks = cache ? cache.tasks : null;
+                // Deliberately NOT falling back to cache.tasks here: this branch is only ever
+                // reached when the cache already failed its own freshness check above, so
+                // "the cache" could be hours or days old — reusing it isn't a soft fallback,
+                // it's silently trusting arbitrarily stale data. Treat as indeterminate instead,
+                // which the tasks === null check below turns into the documented conservative
+                // behavior (limit stays active).
+                tasks = null;
             }
         } catch {
-            tasks = cache ? cache.tasks : null;
+            tasks = null;
         }
     }
     if (tasks === null) return true; // can't determine — conservative
@@ -426,6 +452,25 @@ function isAnySessionGrantingAccess(sessions, now = Date.now()) {
     return Object.values(sessions).some(s => isSessionGrantingAccess(s, now));
 }
 
+// Stricter than isSessionGrantingAccess: true only if this session has been touched within the
+// last SPAN_TOLERANCE_MS. Used specifically to gate re-opening a span that just closed due to
+// staleness. isSessionGrantingAccess's generous "up to 2 hours since last touch" leniency for
+// count/single_url sessions is intentional for NOT prematurely ending an open span over a brief
+// gap — but using that same leniency to justify OPENING a brand new span (i.e. starting to bill
+// again) let an abandoned, idle session (e.g. a count session sitting untouched in cooldown)
+// collect a free SPAN_TOLERANCE_MS top-up every time anything else in the extension happened to
+// run reconciliation, with zero real usage behind it. Re-opening needs genuinely fresh evidence
+// of activity, not just "this session record hasn't technically expired yet".
+function isSessionFreshlyActive(session, now = Date.now()) {
+    if (session.type === 'duration') return now < session.endTime;
+    const lastActive = session.lastActive || session.startTime;
+    return (now - lastActive) <= SPAN_TOLERANCE_MS;
+}
+
+function isAnySessionFreshlyActive(sessions, now = Date.now()) {
+    return Object.values(sessions).some(s => isSessionFreshlyActive(s, now));
+}
+
 // syncSpanState reads-then-writes global span state with no locking of its own. It's called
 // from many places (checkAccess, alarms, messages) that can legitimately fire concurrently
 // across different domains/tabs — without serializing the calls themselves, two overlapping
@@ -461,13 +506,17 @@ async function syncSpanStateSerialized(now = Date.now()) {
 
     const granting = isAnySessionGrantingAccess(sessions, now);
     const stale = spanStart != null && lastLiveness != null && (now - lastLiveness) > SPAN_TOLERANCE_MS;
+    // Distinguishes "the span is ending because access genuinely ended" from "the span is
+    // ending because we just haven't heard anything in a while, but the session record itself
+    // hasn't technically expired" — only the latter needs the stricter re-open check below.
+    const closingDueToStalenessAlone = spanStart != null && stale && granting;
 
     let transitioned = false;
 
     if (spanStart != null && (!granting || stale)) {
-        // Close (or close-then-reopen below, if stale but still granting): bank each
-        // currently-active entry's live portion up to the liveness horizon — never beyond it,
-        // so a stale gap never gets retroactively counted just because we're finally closing it.
+        // Close (or close-then-reopen below, if still eligible): bank each currently-active
+        // entry's live portion up to the liveness horizon — never beyond it, so a stale gap
+        // never gets retroactively counted just because we're finally closing it.
         const bankUntil = Math.min(now, (lastLiveness ?? spanStart) + SPAN_TOLERANCE_MS);
         const updated = { ...usage };
         for (const entry of entries) {
@@ -489,7 +538,17 @@ async function syncSpanStateSerialized(now = Date.now()) {
         transitioned = true;
     }
 
-    if (granting && spanStart == null) {
+    // Re-opening right after a stale-close must not lean on the same lenient "granting" signal
+    // that just failed to prevent the close in the first place — an abandoned count/single_url
+    // session (idle, sitting in cooldown) would otherwise collect a free SPAN_TOLERANCE_MS
+    // credit every time ANYTHING else triggers reconciliation, with zero real usage behind it.
+    // Require genuinely fresh activity (isAnySessionFreshlyActive) in that specific case; a
+    // close driven by real expiry (!granting), or a span that was never open to begin with,
+    // still uses the normal "granting" check — a session that just started is by definition
+    // freshly active anyway, so this changes nothing for the ordinary open-a-new-span case.
+    const canOpen = closingDueToStalenessAlone ? isAnySessionFreshlyActive(sessions, now) : granting;
+
+    if (canOpen && spanStart == null) {
         spanStart = now;
         lastLiveness = now;
         transitioned = true;
@@ -539,7 +598,6 @@ function getDomain(url) {
 // observe the navigation normally.
 async function redirectToPrompt(tabId, promptUrl) {
     pendingPromptTabs.add(tabId);
-    confirmedPromptLandings.delete(tabId);
     const data = await chrome.storage.local.get('__testPromptBase');
     let finalUrl = promptUrl;
     if (data.__testPromptBase) {
@@ -552,23 +610,68 @@ async function redirectToPrompt(tabId, promptUrl) {
 
     // Typing a bare domain (e.g. "youtube.com") triggers the site's own multi-hop redirect
     // chain (http->https, apex->www) that's still in flight at the network layer when we issue
-    // the update above. Chrome sometimes lets that in-progress navigation win instead of our
-    // tabs.update() call, silently dropping the block (page loads normally; a manual reload
-    // works because a reload has no competing in-flight redirect to race against). Verify the
-    // redirect actually landed shortly after, and retry once against the tab's now-settled URL
-    // if it didn't.
-    const promptBase = finalUrl.split('?')[0];
-    setTimeout(async () => {
-        // Landed at some point since this call (even if the user has since moved on by
-        // extending/finishing) — nothing to retry.
-        if (confirmedPromptLandings.has(tabId)) return;
-        try {
-            const tab = await chrome.tabs.get(tabId);
-            if (!tab.url || !tab.url.startsWith(promptBase)) {
-                chrome.tabs.update(tabId, { url: finalUrl });
-            }
-        } catch { /* tab closed or inaccessible — nothing to retry */ }
-    }, 500);
+    // the update above, and Chrome sometimes lets that in-progress navigation win instead of
+    // our tabs.update() call, silently dropping the block. Verifying this used to rely on a
+    // bare setTimeout, but background.js runs as a non-persistent MV3 service worker — a plain
+    // timer isn't guaranteed to survive worker eviction, and if dropped, pendingPromptTabs was
+    // left stuck forever for that tab (see backstopPendingTab for the replacement approach:
+    // verification now piggybacks on the tab's own next real navigation event instead of a
+    // detached timer, so it can't be silently lost this way).
+}
+
+// Prompt-page URL bases this extension may have redirected a tab to — the real extension URL,
+// plus (in Firefox E2E tests) __testPromptBase, since Playwright's Juggler protocol can't
+// observe moz-extension:// navigations directly (see redirectToPrompt).
+async function getPromptBases() {
+    const data = await chrome.storage.local.get('__testPromptBase');
+    const bases = [chrome.runtime.getURL('prompt.html')];
+    if (data.__testPromptBase) bases.push(data.__testPromptBase);
+    return bases;
+}
+
+// Dedicated in-flight guard for backstopPendingTab, deliberately separate from
+// processingTabs: that Set stays held for a full extra second after an ordinary check
+// completes (an artificial debounce against unrelated flicker events, see the onUpdated
+// listener below), which would otherwise cause it to still be "locked" — and silently swallow
+// a genuine, differently-URLed backstop event — for up to a second after the very redirect
+// that armed pendingPromptTabs in the first place. Cleared immediately when the check
+// completes, since there's no equivalent flicker concern here: this only runs on settled
+// navigations (onUpdated's status:'complete', or onCommitted/onHistoryStateUpdated, both of
+// which fire once per resolved navigation, not per intermediate loading tick).
+const backstopInFlight = new Set();
+
+// Called whenever a tab we redirected to prompt.html (pendingPromptTabs) generates a further
+// real navigation event whose URL is NOT the prompt page — i.e. our redirect may have lost a
+// race against the site's own in-flight navigation. Re-runs the REAL access decision for
+// whatever the tab is now showing, through the normal queued path. Deliberately not a URL/
+// domain string comparison: that can't tell "genuinely still stuck on the site we tried to
+// block" apart from "legitimately granted access to that SAME site in the meantime" (e.g.
+// Extend/Finish succeeding) — only the real decision logic knows the difference. Driven by the
+// browser's own "this navigation settled" signal (onUpdated's status:'complete', or
+// onCommitted/onHistoryStateUpdated), so — unlike a detached timer — it can't be silently lost
+// to service-worker eviction: if the worker is alive to receive the event, it's alive to
+// process it; if it was evicted, pendingPromptTabs was already reset to empty and this function
+// is never even reached, since the event just flows through the normal fresh-navigation path.
+async function backstopPendingTab(tabId, url) {
+    if (backstopInFlight.has(tabId)) return;
+    const promptBases = await getPromptBases();
+    if (promptBases.some(base => url.startsWith(base))) return; // arrived at prompt; nothing to backstop
+
+    backstopInFlight.add(tabId);
+    try {
+        const domain = getDomain(url);
+        if (domain && await isTargetSite(url)) {
+            if (WTB_DEBUG) console.log('[WTB DEBUG] backstopPendingTab: re-checking', { tabId, url, domain });
+            const blocked = await checkAccess(tabId, url, domain);
+            if (WTB_DEBUG) console.log('[WTB DEBUG] backstopPendingTab: decision', { tabId, blocked });
+            if (!blocked) pendingPromptTabs.delete(tabId);
+        } else {
+            if (WTB_DEBUG) console.log('[WTB DEBUG] backstopPendingTab: no longer a target site, clearing', { tabId, url });
+            pendingPromptTabs.delete(tabId);
+        }
+    } finally {
+        backstopInFlight.delete(tabId);
+    }
 }
 
 // Check if url matches target
@@ -577,11 +680,15 @@ async function isTargetSite(url) {
     if (!domain) return false;
 
     const data = await chrome.storage.local.get({ targetSites: DEFAULT_TARGETS });
-    return data.targetSites.includes(domain);
+    const result = data.targetSites.includes(domain);
+    if (WTB_DEBUG) console.log('[WTB DEBUG] isTargetSite', { url, domain, targetSites: data.targetSites, result });
+    return result;
 }
 
 // Core navigation listener
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    if (WTB_DEBUG) console.log('[WTB DEBUG] onUpdated fired', { tabId, changeInfo, tabUrl: tab.url });
+
     // We only care if URL changed or status is loading (initial load)
     if (!changeInfo.url && changeInfo.status !== 'loading') return;
 
@@ -593,20 +700,29 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     // the redirect is complete, so a later event for this tab should be treated fresh.
     if (currentUrl.startsWith(chrome.runtime.getURL('prompt.html'))) {
         tabsCurrentlyAtPrompt.add(tabId);
-        confirmedPromptLandings.add(tabId);
         processingTabs.delete(tabId);
+        if (WTB_DEBUG) console.log('[WTB DEBUG] onUpdated: landed at prompt.html', { tabId });
         return;
     }
 
     // If the tab was genuinely at prompt.html and is now navigating away (e.g. after
     // starting a session), clear the pending markers and fall through to process it.
     if (tabsCurrentlyAtPrompt.has(tabId)) {
+        if (WTB_DEBUG) console.log('[WTB DEBUG] onUpdated: navigating away from prompt.html, clearing pending flags', { tabId, currentUrl });
         tabsCurrentlyAtPrompt.delete(tabId);
         pendingPromptTabs.delete(tabId);
     } else if (pendingPromptTabs.has(tabId)) {
-        // Tab was redirected to prompt but hasn't committed there yet — this is a
-        // redirect-chain event (e.g. site.com -> www.site.com) arriving before the tab
-        // reaches prompt.html. Ignore it so it doesn't race a second, competing redirect.
+        // Tab was redirected to prompt but hasn't landed there yet. Intermediate `loading`
+        // hops (e.g. site.com -> www.site.com mid-chain) are ignored so they don't race a
+        // second, competing redirect. Once the navigation actually settles (status:
+        // 'complete') somewhere that isn't the prompt page, our redirect lost that race —
+        // hand off to the real access-check backstop instead of silently giving up.
+        if (changeInfo.status !== 'complete') {
+            if (WTB_DEBUG) console.log('[WTB DEBUG] onUpdated: ignoring intermediate loading hop while pending', { tabId, currentUrl, status: changeInfo.status });
+            return;
+        }
+        if (WTB_DEBUG) console.log('[WTB DEBUG] onUpdated: pending tab settled off prompt page', { tabId, currentUrl });
+        await backstopPendingTab(tabId, currentUrl);
         return;
     }
 
@@ -616,10 +732,16 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     // without this lock each one independently re-issues its own tabs.update() redirect,
     // which itself triggers more onUpdated events — a flicker loop that can take minutes to
     // settle before the block finally sticks.
-    if (processingTabs.has(tabId)) return;
+    if (processingTabs.has(tabId)) {
+        if (WTB_DEBUG) console.log('[WTB DEBUG] onUpdated: skipped, processingTabs locked', { tabId, currentUrl });
+        return;
+    }
 
     const domain = getDomain(currentUrl);
-    if (!domain) return;
+    if (!domain) {
+        if (WTB_DEBUG) console.log('[WTB DEBUG] onUpdated: no resolvable domain, ignoring', { tabId, currentUrl });
+        return;
+    }
 
     processingTabs.add(tabId);
     try {
@@ -640,14 +762,29 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 // route changes (pushState/replaceState) on target sites like YouTube search, video-to-video
 // navigation, and Reddit/Instagram in-app routing, none of which are full page navigations.
 async function handleWebNavigationEvent({ tabId, url, frameId }) {
+    if (WTB_DEBUG) console.log('[WTB DEBUG] handleWebNavigationEvent fired', { tabId, url, frameId });
     if (frameId !== 0) return;
     if (!url) return;
     if (url.startsWith('chrome-extension://') || url.startsWith('moz-extension://')) return;
-    if (pendingPromptTabs.has(tabId)) return;
-    if (processingTabs.has(tabId)) return;
+    if (pendingPromptTabs.has(tabId)) {
+        // onCommitted/onHistoryStateUpdated only fire once a navigation has resolved to its
+        // final URL (no intermediate 'loading' hops to filter, unlike onUpdated above), so any
+        // event here for a pending tab means our redirect lost the race — hand off to the real
+        // access-check backstop instead of silently giving up.
+        if (WTB_DEBUG) console.log('[WTB DEBUG] handleWebNavigationEvent: pending tab settled off prompt page', { tabId, url });
+        await backstopPendingTab(tabId, url);
+        return;
+    }
+    if (processingTabs.has(tabId)) {
+        if (WTB_DEBUG) console.log('[WTB DEBUG] handleWebNavigationEvent: skipped, processingTabs locked', { tabId, url });
+        return;
+    }
 
     const domain = getDomain(url);
-    if (!domain) return;
+    if (!domain) {
+        if (WTB_DEBUG) console.log('[WTB DEBUG] handleWebNavigationEvent: no resolvable domain, ignoring', { tabId, url });
+        return;
+    }
 
     processingTabs.add(tabId);
     try {
@@ -680,6 +817,10 @@ function checkAccess(tabId, url, domain) {
     return enqueueSessionOp(() => checkAccessSerialized(tabId, url, domain));
 }
 
+// Returns true if this call blocked/redirected the tab, false if access was allowed (the tab's
+// own navigation proceeds normally). Callers that re-run this against a tab already sitting on
+// prompt.html (see syncOtherPromptTabs) use the return value to know whether they still need to
+// actively navigate it forward — "allowed" alone doesn't move a tab that isn't mid-navigation.
 async function checkAccessSerialized(tabId, url, domain) {
     // Reconcile span state from current reality before making the blocking decision.
     await syncSpanStateSerialized(Date.now());
@@ -696,6 +837,8 @@ async function checkAccessSerialized(tabId, url, domain) {
     const spanStart = data.scheduledSpanStart ?? null;
     const lastLiveness = data.scheduledSpanLastLiveness ?? null;
 
+    if (WTB_DEBUG) console.log('[WTB DEBUG] checkAccessSerialized', { tabId, url, domain, activeSessions: sessions, cooldowns });
+
     const now = Date.now();
 
     // 0. Check scheduled limits (highest priority — a full block or an exhausted usage cap
@@ -709,7 +852,7 @@ async function checkAccessSerialized(tabId, url, domain) {
                 `prompt.html?url=${encodeURIComponent(url)}&msg=SCHEDULED_LIMIT&limitId=${encodeURIComponent(entry.id)}`
             );
             await redirectToPrompt(tabId, promptUrl);
-            return;
+            return true;
         }
     }
 
@@ -731,16 +874,16 @@ async function checkAccessSerialized(tabId, url, domain) {
 
                  const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
                  await redirectToPrompt(tabId, promptUrl);
-                 return;
+                 return true;
             } else if (now > endTime) {
                 // Expired -> Start Cooldown (Backdated to actual end time) -> Redirect
-                await endSessionAndStartCooldownInternal(domain, 'duration', endTime);
+                await endSessionAndStartCooldownInternal(domain, 'duration', endTime, session.origin === 'extend');
                 await syncSpanStateSerialized(now);
                 const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Time%20Up`);
                 await redirectToPrompt(tabId, promptUrl);
-                return;
+                return true;
             }
-            return; // Allow access
+            return false; // Allow access
 
         } else if (session.type === 'count') {
             // Check Expiry first
@@ -751,7 +894,7 @@ async function checkAccessSerialized(tabId, url, domain) {
 
                  const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
                  await redirectToPrompt(tabId, promptUrl);
-                 return;
+                 return true;
             }
 
             // Check for 2 hours inactivity (similar to unlimited)
@@ -763,7 +906,7 @@ async function checkAccessSerialized(tabId, url, domain) {
 
                  const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
                  await redirectToPrompt(tabId, promptUrl);
-                 return;
+                 return true;
             }
 
             // YouTube specific: Check video ID
@@ -798,7 +941,7 @@ async function checkAccessSerialized(tabId, url, domain) {
                     await syncSpanStateSerialized(now);
                     const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Limit%20Reached`);
                     await redirectToPrompt(tabId, promptUrl);
-                    return;
+                    return true;
                 } else {
                      // Add to whitelist
                      session.watchedVideoIds.push(videoId);
@@ -834,7 +977,7 @@ async function checkAccessSerialized(tabId, url, domain) {
             // above) — resync so the span correctly closes even though this call still
             // allows access.
             await syncSpanStateSerialized(now);
-            return; // Allow access
+            return false; // Allow access
         } else if (session.type === 'single_url') {
             if (checkSingleUrlMatch(url, session.targetUrl)) {
                  // Keep lastActive fresh so isSessionGrantingAccess's span-tracking-only
@@ -842,7 +985,7 @@ async function checkAccessSerialized(tabId, url, domain) {
                  session.lastActive = now;
                  sessions[domain] = session;
                  await chrome.storage.local.set({ activeSessions: sessions });
-                 return; // Allow access
+                 return false; // Allow access
             } else {
                  // Navigated away. End this single_url session.
                  delete sessions[domain];
@@ -851,7 +994,7 @@ async function checkAccessSerialized(tabId, url, domain) {
 
                  const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Finished`);
                  await redirectToPrompt(tabId, promptUrl);
-                 return;
+                 return true;
             }
         }
     }
@@ -865,7 +1008,7 @@ async function checkAccessSerialized(tabId, url, domain) {
             const minutesLeft = Math.ceil((endTime - now) / 60000);
             const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&cooldown=${minutesLeft}`);
             await redirectToPrompt(tabId, promptUrl);
-            return;
+            return true;
         } else {
             // Expired, clean up
             delete cooldowns[domain];
@@ -876,6 +1019,7 @@ async function checkAccessSerialized(tabId, url, domain) {
     // 3. No Session & No Cooldown -> Redirect to Prompt to Start
     const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}`);
     await redirectToPrompt(tabId, promptUrl);
+    return true;
 }
 
 function checkSingleUrlMatch(currentUrl, targetUrl) {
@@ -919,27 +1063,35 @@ function getYouTubeVideoId(url) {
     return null;
 }
 
-async function endSessionAndStartCooldownInternal(domain, type, overrideStartTime = null) {
+async function endSessionAndStartCooldownInternal(domain, type, overrideStartTime = null, isExtend = false) {
     const data = await chrome.storage.local.get(['activeSessions', 'cooldowns', 'durationCooldown', 'countCooldown']);
     const sessions = data.activeSessions || {};
     const cooldowns = data.cooldowns || {};
 
     delete sessions[domain];
 
-    const durationMinutes = (type === 'duration' ? data.durationCooldown : data.countCooldown) || 30;
+    // An Extend grant ending should resume the ORIGINAL cooldown it was carved out of, not
+    // start a brand-new full-length one — starting an Extend session never touches
+    // cooldowns[domain] (see startSessionInternal), so the original record is still sitting
+    // here untouched. Overwriting it here was the bug: every Extend click was silently pushing
+    // the real cooldown further into the future by a full cooldown length, directly
+    // contradicting the UI's own "grants a brief extra window without resetting your cooldown."
+    if (!isExtend) {
+        const durationMinutes = (type === 'duration' ? data.durationCooldown : data.countCooldown) || 30;
 
-    // New Structure: Store start time and duration
-    cooldowns[domain] = {
-        startTime: overrideStartTime || Date.now(),
-        duration: durationMinutes * 60 * 1000,
-        originalType: type
-    };
+        // New Structure: Store start time and duration
+        cooldowns[domain] = {
+            startTime: overrideStartTime || Date.now(),
+            duration: durationMinutes * 60 * 1000,
+            originalType: type
+        };
+    }
 
     await chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
 }
 
-function endSessionAndStartCooldown(domain, type, overrideStartTime = null) {
-    return enqueueSessionOp(() => endSessionAndStartCooldownInternal(domain, type, overrideStartTime));
+function endSessionAndStartCooldown(domain, type, overrideStartTime = null, isExtend = false) {
+    return enqueueSessionOp(() => endSessionAndStartCooldownInternal(domain, type, overrideStartTime, isExtend));
 }
 
 // Handle Alarms for Duration Expiry
@@ -954,7 +1106,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         // Verify session is still active and duration type
         if (data.activeSessions && data.activeSessions[domain] && data.activeSessions[domain].type === 'duration') {
              const session = data.activeSessions[domain];
-             await endSessionAndStartCooldown(domain, 'duration', session.endTime);
+             await endSessionAndStartCooldown(domain, 'duration', session.endTime, session.origin === 'extend');
 
              // This alarm ends a session with zero navigation involved — if it was the sole
              // granting session, the span must close here, or it would stay open indefinitely
@@ -1013,8 +1165,16 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     pendingPromptTabs.delete(tabId);
     tabsCurrentlyAtPrompt.delete(tabId);
     processingTabs.delete(tabId);
-    confirmedPromptLandings.delete(tabId);
 });
+
+// Shared by chrome.tabs.onReplaced's immediate-success and retry paths below.
+async function processTabForAccessById(tabId, url) {
+    const domain = getDomain(url);
+    if (!domain) return;
+    if (await isTargetSite(url)) {
+        await checkAccess(tabId, url, domain);
+    }
+}
 
 // Chrome's "Preload pages for faster browsing" (Settings > Performance) can prerender a
 // high-confidence omnibox/autocomplete destination in the background, then swap it into the
@@ -1024,31 +1184,78 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // blocking silently never happens for autocomplete-selected navigations specifically, while a
 // typed-out URL or a reload (both normal navigations) work fine.
 chrome.tabs.onReplaced.addListener(async (addedTabId, removedTabId) => {
+    if (WTB_DEBUG) console.log('[WTB DEBUG] onReplaced fired', { addedTabId, removedTabId });
     pendingPromptTabs.delete(removedTabId);
     tabsCurrentlyAtPrompt.delete(removedTabId);
     processingTabs.delete(removedTabId);
-    confirmedPromptLandings.delete(removedTabId);
 
-    if (processingTabs.has(addedTabId)) return;
+    if (processingTabs.has(addedTabId)) {
+        if (WTB_DEBUG) console.log('[WTB DEBUG] onReplaced: skipped, processingTabs locked', { addedTabId });
+        return;
+    }
+    // Held for the entire retry window below, not just the immediate-success path — this is
+    // what guarantees the scoped onUpdated listener in the retry branch is the only thing that
+    // acts on the URL-populating event it's waiting for (the top-level onUpdated/
+    // handleWebNavigationEvent listeners both bail out on processingTabs.has(tabId)).
+    processingTabs.add(addedTabId);
     try {
-        const tab = await chrome.tabs.get(addedTabId);
-        if (!tab.url) return;
-        const domain = getDomain(tab.url);
-        if (!domain) return;
-        processingTabs.add(addedTabId);
+        let tab;
         try {
-            if (await isTargetSite(tab.url)) {
-                await checkAccess(addedTabId, tab.url, domain);
-            }
-        } finally {
-            setTimeout(() => processingTabs.delete(addedTabId), 1000);
+            tab = await chrome.tabs.get(addedTabId);
+        } catch {
+            return; // tab already gone
         }
-    } catch { /* tab may already be gone */ }
+        if (tab.url) {
+            if (WTB_DEBUG) console.log('[WTB DEBUG] onReplaced: tab.url populated immediately', { addedTabId, removedTabId, url: tab.url });
+            await processTabForAccessById(addedTabId, tab.url);
+            return;
+        }
+
+        // tab.url was empty at this exact instant — a real race during the tab-ID swap. There
+        // is no other listener expected to catch this navigation type (see comment above), so
+        // retry instead of silently giving up: wait for this specific tab's next onUpdated
+        // event to report a real URL, with a bounded fallback poll in case that event itself
+        // never arrives.
+        if (WTB_DEBUG) console.log('[WTB DEBUG] onReplaced: tab.url empty, arming retry', { addedTabId, removedTabId });
+        await new Promise((resolve) => {
+            let done = false;
+            const finish = async (url) => {
+                if (done) return;
+                done = true;
+                clearTimeout(fallbackTimer);
+                chrome.tabs.onUpdated.removeListener(scopedListener);
+                if (url) {
+                    if (WTB_DEBUG) console.log('[WTB DEBUG] onReplaced retry: resolved', { addedTabId, url });
+                    await processTabForAccessById(addedTabId, url);
+                } else if (WTB_DEBUG) {
+                    console.log('[WTB DEBUG] onReplaced retry: gave up, tab.url never populated', { addedTabId });
+                }
+                resolve();
+            };
+            const scopedListener = (tabId, changeInfo, updatedTab) => {
+                if (tabId !== addedTabId) return;
+                const url = changeInfo.url || updatedTab.url;
+                if (url) finish(url);
+            };
+            chrome.tabs.onUpdated.addListener(scopedListener);
+            const fallbackTimer = setTimeout(async () => {
+                try {
+                    const polledTab = await chrome.tabs.get(addedTabId);
+                    finish(polledTab.url || null);
+                } catch {
+                    finish(null); // tab gone
+                }
+            }, 1500);
+        });
+    } finally {
+        setTimeout(() => processingTabs.delete(addedTabId), 1000);
+    }
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'startSession') {
-        startSession(message.url, message.type, message.value).then((success) => {
+        const originTabId = sender.tab ? sender.tab.id : null;
+        startSession(message.url, message.type, message.value, message.origin, originTabId).then((success) => {
             sendResponse({ success: success });
         }).catch(err => sendResponse({ success: false, error: err.message }));
         return true;
@@ -1075,6 +1282,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // old cached result.
         chrome.storage.local.remove('halfFullTaskCache').finally(() => sendResponse({}));
         return true;
+    } else if (message.action === 'ensureHalfFullToken') {
+        // options.js defers to this instead of doing its own independent token refresh, so
+        // there's a single source of truth for halfFullAuth writes — see hfGetValidToken.
+        hfGetValidToken().then(token => sendResponse({ token })).catch(() => sendResponse({ token: null }));
+        return true;
     }
 });
 
@@ -1091,18 +1303,76 @@ chrome.runtime.onStartup.addListener(async () => {
     await syncScheduledLimitAlarms();
 });
 
-async function startSessionInternal(url, type, value) {
+// Finds every OTHER tab currently sitting on prompt.html for `domain` (skipping `excludeTabId`,
+// which handles its own redirect via startSession's response) and re-runs the exact same access
+// check against each one's original intended URL — as if that tab had just been reloaded. This
+// is what makes a fresh session "sync": a count session correctly consumes a slot per already-
+// open blocked tab (and sends any tab beyond the target to the cooldown/limit screen, same as it
+// would on a real reload), while a duration session simply lets everyone through. Tabs that
+// already have real access are never touched, since we only look at tabs whose current URL IS
+// prompt.html. Must be awaited directly (not via checkAccess/enqueueSessionOp) — this runs
+// inside a call that's already occupying the single session-op queue slot; enqueuing more work
+// onto that same queue from within it would deadlock (the outer call can't finish until the
+// queue advances, but the queue can't advance until the outer call finishes).
+async function syncOtherPromptTabs(domain, excludeTabId) {
+    const promptBases = await getPromptBases();
+
+    let tabs;
+    try {
+        tabs = await chrome.tabs.query({});
+    } catch { return; }
+
+    for (const tab of tabs) {
+        if (tab.id === excludeTabId) continue;
+        if (!tab.url || !promptBases.some(base => tab.url.startsWith(base))) continue;
+
+        let intendedUrl;
+        try {
+            intendedUrl = new URL(tab.url).searchParams.get('url');
+        } catch { continue; }
+        if (!intendedUrl) continue;
+
+        const tabDomain = getDomain(intendedUrl);
+        if (tabDomain !== domain) continue;
+
+        const blocked = await checkAccessSerialized(tab.id, intendedUrl, tabDomain);
+        if (!blocked) {
+            // Allowed, but this tab isn't mid-navigation (it's sitting still on prompt.html) —
+            // checkAccessSerialized has no reason to move it on its own, so send it through.
+            chrome.tabs.update(tab.id, { url: intendedUrl });
+        }
+    }
+}
+
+async function startSessionInternal(url, type, value, origin, originTabId) {
     const domain = getDomain(url);
     if (!domain) return false;
 
-    const data = await chrome.storage.local.get(['activeSessions']);
+    const data = await chrome.storage.local.get(['activeSessions', 'cooldowns']);
     const sessions = data.activeSessions || {};
+    const cooldowns = data.cooldowns || {};
+
+    // A fresh session pick (the initial duration/count picker) should only ever be possible
+    // when nothing is currently active for this domain. If a cooldown has since started
+    // elsewhere, this tab is a stale copy of the block screen rendered before that cooldown
+    // began — letting it silently create a session here would overwrite/bypass that cooldown
+    // for the ENTIRE domain, not just this tab. Extend/Finish are exempt: those are only ever
+    // reachable from the cooldown screen itself, so they're meant to act during a cooldown.
+    if (origin === 'fresh' && cooldowns[domain] && (cooldowns[domain].startTime + cooldowns[domain].duration) > Date.now()) {
+        if (originTabId != null) {
+            // Push this tab to reflect reality (the actual cooldown screen) instead of leaving
+            // it stuck showing an outdated picker with just a generic error.
+            await checkAccessSerialized(originTabId, url, domain).catch(() => {});
+        }
+        return false;
+    }
 
     const cooldownData = await chrome.storage.local.get(['durationCooldown']);
     const durationCooldown = cooldownData.durationCooldown || 30;
 
     const session = {
         type: type,
+        origin: origin,
         startTime: Date.now(),
     };
 
@@ -1130,9 +1400,19 @@ async function startSessionInternal(url, type, value) {
 
     sessions[domain] = session;
     await chrome.storage.local.set({ activeSessions: sessions });
+
+    // Only a genuinely fresh session pick (the initial duration/count picker on the block
+    // screen) syncs to other blocked tabs. Extend and Finish Video/Post — both of which can
+    // also produce 'duration'/'single_url' session objects — stay exclusive to the tab that
+    // clicked them, per explicit design: those are deliberate, minimal, one-off grants, not a
+    // "keep browsing" decision meant to cascade to every other blocked tab.
+    if (origin === 'fresh' && (type === 'duration' || type === 'count')) {
+        await syncOtherPromptTabs(domain, originTabId);
+    }
+
     return true;
 }
 
-function startSession(url, type, value) {
-    return enqueueSessionOp(() => startSessionInternal(url, type, value));
+function startSession(url, type, value, origin, originTabId) {
+    return enqueueSessionOp(() => startSessionInternal(url, type, value, origin, originTabId));
 }

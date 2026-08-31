@@ -419,29 +419,17 @@ async function halfFullSignOut() {
 }
 
 // Fetch patterns from Firestore and store them locally for dropdown use.
+// Token refresh itself is NOT duplicated here — it defers to background.js's hfGetValidToken
+// via a message. Two independent refresh implementations (this one used to do its own fetch
+// against securetoken.googleapis.com) can race: each does an unlocked read-modify-write of the
+// whole halfFullAuth object, so options.js refreshing from a snapshot read minutes earlier could
+// overwrite a newer token background.js had already refreshed. Routing through one place removes
+// the race entirely and reuses hfGetValidToken's sign-out-on-invalid-refresh handling for free.
 async function refreshHalfFullPatterns(auth) {
-    if (!auth || !auth.uid || !auth.idToken) return;
-    // Refresh token if close to expiry
-    let token = auth.idToken;
-    if (auth.expiresAt && Date.now() > auth.expiresAt - 60000) {
-        try {
-            const resp = await fetch(
-                `https://securetoken.googleapis.com/v1/token?key=${HF_API_KEY}`,
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(auth.refreshToken)}`,
-                }
-            );
-            if (resp.ok) {
-                const r = await resp.json();
-                const updated = { ...auth, idToken: r.id_token, refreshToken: r.refresh_token,
-                    uid: r.user_id, expiresAt: Date.now() + parseInt(r.expires_in, 10) * 1000 };
-                await chrome.storage.local.set({ halfFullAuth: updated });
-                token = updated.idToken;
-            }
-        } catch { /* use existing token */ }
-    }
+    if (!auth || !auth.uid) return;
+    const response = await new Promise(resolve => chrome.runtime.sendMessage({ action: 'ensureHalfFullToken' }, resolve));
+    const token = response && response.token;
+    if (!token) return; // not signed in, or refresh failed — background.js already handles sign-out if needed
 
     try {
         const url = `https://firestore.googleapis.com/v1/projects/${HF_PROJECT_ID}/databases/(default)/documents/users/${auth.uid}/pattern`;

@@ -205,7 +205,16 @@
 // callback parameter — the page passes its own (page-context) resolve function and the
 // content script calls it with a plain JSON string, which auto-clones across worlds.
 // No-op in Chrome (exportFunction is undefined there).
-if (typeof exportFunction !== 'undefined') {
+//
+// SECURITY: exportFunction is a standard API present in every real Firefox content script —
+// NOT a signal that this is a test environment. Without the hostname check below, this bridge
+// would expose chrome.storage.local (including Half Full's idToken/refreshToken) and
+// chrome.runtime.sendMessage (including the ability to call startSession) to every website the
+// user visits, in the actual shipped Firefox build. It must only ever activate on the exact
+// synthetic domains the Playwright fixture serves (see tests/e2e/fixture.js's HELPER_URL and
+// TEST_PROMPT_BASE) — domains that cannot exist on the real internet.
+const TEST_BRIDGE_HOSTS = new Set(['playwright-ext-helper.invalid', 'playwright-ext-prompt.invalid']);
+if (typeof exportFunction !== 'undefined' && TEST_BRIDGE_HOSTS.has(location.hostname)) {
     const store = (typeof browser !== 'undefined' && browser.storage) ? browser.storage.local : chrome.storage.local;
     exportFunction((op, dataStr, callback) => {
         const data = dataStr === null ? null : JSON.parse(dataStr);

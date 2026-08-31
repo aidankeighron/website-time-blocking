@@ -99,6 +99,17 @@ function formatTimeLocal(hour, minute) {
     return `${h}:${String(minute).padStart(2, '0')} ${period}`;
 }
 
+// Escapes text interpolated into an innerHTML template. Needed specifically for Half Full
+// pattern names — those come from the user's own Firestore data (effectively externally
+// controlled from this extension's point of view) and get built into a template string. MV3's
+// CSP blocks inline script execution either way, but this stops arbitrary markup/links from
+// rendering on the block screen.
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str == null ? '' : String(str);
+    return div.innerHTML;
+}
+
 const SCHEDULED_LIMIT_DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function formatScheduledLimitDaysLocal(days) {
@@ -121,7 +132,7 @@ async function showScheduledLimitBlockUI(limitId) {
             ? 'This window is fully blocked, no browsing time is allowed.'
             : `${entry.limitMinutes}-minute limit used up.`;
         const waitLine = hfPattern
-            ? `This lifts as soon as you finish the "${hfPattern.pattern}" task(s) in Half Full — or waits until ${endStr}, whichever comes first.`
+            ? `This lifts as soon as you finish the "${escapeHtml(hfPattern.pattern)}" task(s) in Half Full — or waits until ${endStr}, whichever comes first.`
             : `This is not a countdown you can wait out early, access resumes at ${endStr}.`;
         detailHtml = `
             <div class="time-range-block-info">
@@ -146,7 +157,7 @@ async function showScheduledLimitBlockUI(limitId) {
     document.body.innerHTML = `
         <div class="container">
             <h1 class="scheduled-limit-block-title">Access Blocked (Scheduled Limit)</h1>
-            <p id="target-site-display">You are trying to access ${hostname}</p>
+            <p id="target-site-display">You are trying to access ${escapeHtml(hostname)}</p>
             ${detailHtml}
         </div>
     ` + '<link rel="stylesheet" href="prompt.css">';
@@ -286,7 +297,7 @@ function showCooldownUI(endTime, cooldownInfo, delay = 0, extensionDuration = 30
     document.body.innerHTML = `
         <div class="container">
             <h1 class="cooldown-title">Cooldown Active</h1>
-            <p>You cannot access ${hostname} for another <span id="cd-timer">${minutesLeft}</span> minutes.</p>
+            <p>You cannot access ${escapeHtml(hostname)} for another <span id="cd-timer">${minutesLeft}</span> minutes.</p>
             <p class="small-text">Go do something else!</p>
             ${bypassHtml}
         </div>
@@ -321,12 +332,12 @@ function showCooldownUI(endTime, cooldownInfo, delay = 0, extensionDuration = 30
 
     if (extendBtn) {
         extendBtn.addEventListener('click', () => {
-            startSession('duration', extensionDuration / 60); // convert seconds to minutes
+            startSession('duration', extensionDuration / 60, 'extend'); // convert seconds to minutes
         });
     }
     if (finishBtn) {
         finishBtn.addEventListener('click', () => {
-            startSession('single_url', intendedUrl);
+            startSession('single_url', intendedUrl, 'finish');
         });
     }
 }
@@ -404,7 +415,7 @@ function handleConfirm() {
             errorDiv.textContent = "Please enter a valid positive duration.";
             return;
         }
-        startSession('duration', minutes);
+        startSession('duration', minutes, 'fresh');
 
     } else if (selectedType === 'count') {
         const count = parseInt(document.getElementById('count-input').value, 10);
@@ -412,16 +423,17 @@ function handleConfirm() {
             errorDiv.textContent = "Please enter a valid positive number of videos.";
             return;
         }
-        startSession('count', count);
+        startSession('count', count, 'fresh');
     }
 }
 
-function startSession(type, value) {
+function startSession(type, value, origin) {
     _sendMessage({
         action: 'startSession',
         url: intendedUrl,
         type: type,
-        value: value
+        value: value,
+        origin: origin
     }).then(response => {
         if (response && response.success) {
             window.location.replace(intendedUrl);
