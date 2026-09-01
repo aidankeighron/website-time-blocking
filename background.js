@@ -7,6 +7,26 @@ const DEFAULT_TARGETS = ['instagram.com', 'reddit.com', 'youtube.com'];
 const processingTabs = new Set(); // Tracks tabs currently being processed (short-lived lock)
 const pendingPromptTabs = new Set(); // Tracks tabs redirected to prompt.html, waiting to commit
 const tabsCurrentlyAtPrompt = new Set(); // Tracks tabs that have committed to prompt.html
+// Which domain each processingTabs entry's debounce is actually FOR. The 1-second debounce
+// below exists to swallow duplicate events for the SAME in-flight navigation (a site can fire
+// many onUpdated ticks per navigation); it must not also swallow a genuinely different,
+// subsequent navigation on the same tab that happens to land inside that window. Concretely:
+// opening a new tab and typing into the omnibox routes through Chrome's own
+// chrome://newtab/ -> chrome-untrusted://new-tab-page/... -> google.com/search/warmup.html
+// chain before ever reaching the real destination — all as ordinary onUpdated events on ONE
+// tab, not a tab replacement. None of those are target sites, so nothing blocks them, but the
+// debounce they leave behind used to also blindly swallow the real destination's own event if
+// it arrived (as it usually does once caches are warm) within that same second — a live-
+// confirmed miss with zero blocking UI. Comparing against the domain actually being debounced
+// lets a different domain through immediately instead of waiting out someone else's window.
+const lastCheckedDomain = new Map();
+// Tabs whose real destination chrome.tabs.onReplaced is still waiting to discover (tab.url was
+// empty or a transient browser placeholder at swap time — see isTransientBrowserUrl below).
+// Deliberately separate from processingTabs/lastCheckedDomain: while a tab is in here, the
+// top-level onUpdated/handleWebNavigationEvent listeners must defer to the retry's own scoped
+// listener UNCONDITIONALLY, regardless of domain — domain-based debouncing doesn't apply
+// because there IS no domain yet; that's the whole thing being resolved.
+const pendingReplacementResolution = new Set();
 
 // TEMPORARY — see BLOCKING_UI_BUG_HANDOFF.md action item 6. Remove every `if (WTB_DEBUG)`
 // block (and this line) once the user confirms the autofill/prerender-navigation fix on their
@@ -726,14 +746,11 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         return;
     }
 
-    // A rapid duplicate of an in-flight check for this same tab. Sites fire many onUpdated
-    // events per navigation (loading/complete, title, favicon, SPA route changes — this is
-    // especially aggressive on Firefox and on the exact sites this extension targets), and
-    // without this lock each one independently re-issues its own tabs.update() redirect,
-    // which itself triggers more onUpdated events — a flicker loop that can take minutes to
-    // settle before the block finally sticks.
-    if (processingTabs.has(tabId)) {
-        if (WTB_DEBUG) console.log('[WTB DEBUG] onUpdated: skipped, processingTabs locked', { tabId, currentUrl });
+    if (pendingReplacementResolution.has(tabId)) {
+        // onReplaced's retry (below) is actively waiting for this specific tab's real
+        // destination via its own scoped listener — defer to it entirely rather than also
+        // acting on this event ourselves, which would double-process it.
+        if (WTB_DEBUG) console.log('[WTB DEBUG] onUpdated: deferring to onReplaced retry in flight', { tabId, currentUrl });
         return;
     }
 
@@ -743,7 +760,22 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         return;
     }
 
+    // A rapid duplicate of an in-flight check for this SAME domain. Sites fire many onUpdated
+    // events per navigation (loading/complete, title, favicon, SPA route changes — this is
+    // especially aggressive on Firefox and on the exact sites this extension targets), and
+    // without this lock each one independently re-issues its own tabs.update() redirect,
+    // which itself triggers more onUpdated events — a flicker loop that can take minutes to
+    // settle before the block finally sticks. Gated on domain (not just tabId) so a genuinely
+    // different, subsequent navigation on the same tab — e.g. Chrome's own
+    // chrome://newtab/ -> search-warmup -> destination chain — isn't swallowed just because it
+    // lands inside this domain's debounce window (see lastCheckedDomain above).
+    if (processingTabs.has(tabId) && lastCheckedDomain.get(tabId) === domain) {
+        if (WTB_DEBUG) console.log('[WTB DEBUG] onUpdated: skipped, processingTabs locked for same domain', { tabId, currentUrl, domain });
+        return;
+    }
+
     processingTabs.add(tabId);
+    lastCheckedDomain.set(tabId, domain);
     try {
         if (await isTargetSite(currentUrl)) {
             await checkAccess(tabId, currentUrl, domain);
@@ -775,18 +807,25 @@ async function handleWebNavigationEvent({ tabId, url, frameId }) {
         await backstopPendingTab(tabId, url);
         return;
     }
-    if (processingTabs.has(tabId)) {
-        if (WTB_DEBUG) console.log('[WTB DEBUG] handleWebNavigationEvent: skipped, processingTabs locked', { tabId, url });
+    if (pendingReplacementResolution.has(tabId)) {
+        if (WTB_DEBUG) console.log('[WTB DEBUG] handleWebNavigationEvent: deferring to onReplaced retry in flight', { tabId, url });
         return;
     }
-
     const domain = getDomain(url);
     if (!domain) {
         if (WTB_DEBUG) console.log('[WTB DEBUG] handleWebNavigationEvent: no resolvable domain, ignoring', { tabId, url });
         return;
     }
 
+    // See the matching comment in onUpdated above: only swallow a duplicate for the SAME
+    // domain, not a genuinely different navigation landing inside the debounce window.
+    if (processingTabs.has(tabId) && lastCheckedDomain.get(tabId) === domain) {
+        if (WTB_DEBUG) console.log('[WTB DEBUG] handleWebNavigationEvent: skipped, processingTabs locked for same domain', { tabId, url, domain });
+        return;
+    }
+
     processingTabs.add(tabId);
+    lastCheckedDomain.set(tabId, domain);
     try {
         if (await isTargetSite(url)) {
             await checkAccess(tabId, url, domain);
@@ -1165,6 +1204,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     pendingPromptTabs.delete(tabId);
     tabsCurrentlyAtPrompt.delete(tabId);
     processingTabs.delete(tabId);
+    lastCheckedDomain.delete(tabId);
+    pendingReplacementResolution.delete(tabId);
 });
 
 // Shared by chrome.tabs.onReplaced's immediate-success and retry paths below.
@@ -1174,6 +1215,22 @@ async function processTabForAccessById(tabId, url) {
     if (await isTargetSite(url)) {
         await checkAccess(tabId, url, domain);
     }
+}
+
+// A swapped-in tab's URL passes through several of the browser's OWN internal placeholder
+// pages before reaching the site the user actually typed/selected — e.g. opening a new tab
+// and typing a search legitimately transitions chrome://newtab/ -> chrome-untrusted://
+// new-tab-page/... -> https://www.google.com/search/warmup.html -> the real destination, all
+// as real onUpdated events with a genuinely non-empty tab.url at each step. Treating the FIRST
+// non-empty URL as "resolved" (as an earlier version of the onReplaced retry below did) means
+// resolving on chrome://newtab/ itself — which isn't a target site, so the access check runs,
+// finds nothing to block, and the whole retry considers itself done, while the REAL destination
+// arrives moments later as an ordinary event that's now ignored (processingTabs still briefly
+// held) with nothing left waiting to catch it. Confirmed via a live repro: exactly this
+// sequence preceded a real "no blocking UI at all" miss on a fresh YouTube navigation.
+function isTransientBrowserUrl(url) {
+    if (!url) return true;
+    return /^(chrome|chrome-untrusted|edge|chrome-search|about):/i.test(url);
 }
 
 // Chrome's "Preload pages for faster browsing" (Settings > Performance) can prerender a
@@ -1188,16 +1245,19 @@ chrome.tabs.onReplaced.addListener(async (addedTabId, removedTabId) => {
     pendingPromptTabs.delete(removedTabId);
     tabsCurrentlyAtPrompt.delete(removedTabId);
     processingTabs.delete(removedTabId);
+    lastCheckedDomain.delete(removedTabId);
+    pendingReplacementResolution.delete(removedTabId);
 
-    if (processingTabs.has(addedTabId)) {
-        if (WTB_DEBUG) console.log('[WTB DEBUG] onReplaced: skipped, processingTabs locked', { addedTabId });
+    if (pendingReplacementResolution.has(addedTabId)) {
+        if (WTB_DEBUG) console.log('[WTB DEBUG] onReplaced: skipped, already resolving', { addedTabId });
         return;
     }
     // Held for the entire retry window below, not just the immediate-success path — this is
     // what guarantees the scoped onUpdated listener in the retry branch is the only thing that
     // acts on the URL-populating event it's waiting for (the top-level onUpdated/
-    // handleWebNavigationEvent listeners both bail out on processingTabs.has(tabId)).
-    processingTabs.add(addedTabId);
+    // handleWebNavigationEvent listeners both defer unconditionally to
+    // pendingReplacementResolution.has(tabId), regardless of domain).
+    pendingReplacementResolution.add(addedTabId);
     try {
         let tab;
         try {
@@ -1205,18 +1265,18 @@ chrome.tabs.onReplaced.addListener(async (addedTabId, removedTabId) => {
         } catch {
             return; // tab already gone
         }
-        if (tab.url) {
-            if (WTB_DEBUG) console.log('[WTB DEBUG] onReplaced: tab.url populated immediately', { addedTabId, removedTabId, url: tab.url });
+        if (!isTransientBrowserUrl(tab.url)) {
+            if (WTB_DEBUG) console.log('[WTB DEBUG] onReplaced: real destination populated immediately', { addedTabId, removedTabId, url: tab.url });
             await processTabForAccessById(addedTabId, tab.url);
             return;
         }
 
-        // tab.url was empty at this exact instant — a real race during the tab-ID swap. There
-        // is no other listener expected to catch this navigation type (see comment above), so
-        // retry instead of silently giving up: wait for this specific tab's next onUpdated
-        // event to report a real URL, with a bounded fallback poll in case that event itself
-        // never arrives.
-        if (WTB_DEBUG) console.log('[WTB DEBUG] onReplaced: tab.url empty, arming retry', { addedTabId, removedTabId });
+        // tab.url is empty or still a transient browser-internal placeholder — the swapped-in
+        // tab hasn't reached its real destination yet. There is no other listener expected to
+        // catch this navigation type (see comment above), so wait instead of silently giving
+        // up: keep watching this specific tab's onUpdated events until a real destination
+        // shows up, with a bounded fallback poll in case no further event ever arrives.
+        if (WTB_DEBUG) console.log('[WTB DEBUG] onReplaced: no real destination yet, arming retry', { addedTabId, removedTabId, sawUrl: tab.url });
         await new Promise((resolve) => {
             let done = false;
             const finish = async (url) => {
@@ -1228,27 +1288,27 @@ chrome.tabs.onReplaced.addListener(async (addedTabId, removedTabId) => {
                     if (WTB_DEBUG) console.log('[WTB DEBUG] onReplaced retry: resolved', { addedTabId, url });
                     await processTabForAccessById(addedTabId, url);
                 } else if (WTB_DEBUG) {
-                    console.log('[WTB DEBUG] onReplaced retry: gave up, tab.url never populated', { addedTabId });
+                    console.log('[WTB DEBUG] onReplaced retry: gave up, no real destination ever seen', { addedTabId });
                 }
                 resolve();
             };
             const scopedListener = (tabId, changeInfo, updatedTab) => {
                 if (tabId !== addedTabId) return;
                 const url = changeInfo.url || updatedTab.url;
-                if (url) finish(url);
+                if (!isTransientBrowserUrl(url)) finish(url);
             };
             chrome.tabs.onUpdated.addListener(scopedListener);
             const fallbackTimer = setTimeout(async () => {
                 try {
                     const polledTab = await chrome.tabs.get(addedTabId);
-                    finish(polledTab.url || null);
+                    finish(isTransientBrowserUrl(polledTab.url) ? null : polledTab.url);
                 } catch {
                     finish(null); // tab gone
                 }
-            }, 1500);
+            }, 2500);
         });
     } finally {
-        setTimeout(() => processingTabs.delete(addedTabId), 1000);
+        setTimeout(() => pendingReplacementResolution.delete(addedTabId), 1000);
     }
 });
 

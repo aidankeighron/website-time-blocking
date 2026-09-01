@@ -28,6 +28,38 @@ test('onReplaced blocks immediately when tab.url is already populated', async ()
     expectPromptRedirect(NEW_TAB);
 });
 
+test('onReplaced treats an already-populated transient URL (e.g. chrome://newtab/) the same as empty — waits for the real destination', async () => {
+    // Live-confirmed bug: a swapped-in tab's URL legitimately passes through the browser's OWN
+    // internal placeholder pages (chrome://newtab/, search warmup, etc.) before reaching the
+    // site the user actually typed. Treating the first non-empty URL as "resolved" meant
+    // resolving on the placeholder and never checking the real destination at all.
+    __mockFns__['tabs.get'].mockResolvedValueOnce({ url: 'chrome://newtab/' });
+    const replacedPromise = fireReplaced(NEW_TAB, OLD_TAB);
+    await flushPromises();
+
+    await fireUpdated(NEW_TAB, { url: YT_HOME, status: 'complete' }, { url: YT_HOME, status: 'complete' });
+    await replacedPromise;
+
+    expectPromptRedirect(NEW_TAB);
+});
+
+test('onReplaced does not resolve early on a transient chrome://newtab/ placeholder delivered via onUpdated — keeps waiting for the real destination', async () => {
+    __mockFns__['tabs.get'].mockResolvedValueOnce({ url: '' });
+    const replacedPromise = fireReplaced(NEW_TAB, OLD_TAB);
+    await flushPromises();
+
+    // The transient placeholder arrives first as a genuine onUpdated event — must NOT be
+    // treated as the resolved destination.
+    await fireUpdated(NEW_TAB, { url: 'chrome://newtab/', status: 'complete' }, { url: 'chrome://newtab/', status: 'complete' });
+    expectNoRedirect(NEW_TAB);
+
+    // The real destination arrives moments later — this is what should resolve the retry.
+    await fireUpdated(NEW_TAB, { url: YT_HOME, status: 'complete' }, { url: YT_HOME, status: 'complete' });
+    await replacedPromise;
+
+    expectPromptRedirect(NEW_TAB);
+});
+
 test('onReplaced retries via the tab\'s own next onUpdated event when tab.url is momentarily empty', async () => {
     // Default mock (see tests/setup.js) already resolves tabs.get to { url: '' }, simulating
     // the race. Kick off onReplaced without awaiting yet — it will register a scoped listener
@@ -60,21 +92,30 @@ test('onReplaced retry does not double-process: the top-level onUpdated listener
 
 test('onReplaced falls back to a bounded poll if the scoped onUpdated listener never fires', async () => {
     // tabs.get keeps resolving empty on the initial check; the fallback poll's own tabs.get
-    // call (~1500ms later) is the one that finally reports a real URL.
+    // call (~2500ms later) is the one that finally reports a real URL.
     __mockFns__['tabs.get']
         .mockResolvedValueOnce({ url: '' })   // onReplaced's initial check
         .mockResolvedValueOnce({ url: YT_HOME }); // the fallback poll
 
     await fireReplaced(NEW_TAB, OLD_TAB);
     expectPromptRedirect(NEW_TAB);
-}, 5000);
+}, 6000);
+
+test('onReplaced fallback poll also treats a still-transient URL as "not resolved" and gives up', async () => {
+    __mockFns__['tabs.get']
+        .mockResolvedValueOnce({ url: '' })
+        .mockResolvedValueOnce({ url: 'chrome://newtab/' }); // still just the placeholder at poll time
+
+    await fireReplaced(NEW_TAB, OLD_TAB);
+    expectNoRedirect(NEW_TAB);
+}, 6000);
 
 test('onReplaced gives up quietly (no crash, no stuck lock) if the tab is gone by the fallback poll', async () => {
     __mockFns__['tabs.get']
         .mockResolvedValueOnce({ url: '' })
         .mockRejectedValueOnce(new Error('No tab with id'));
 
-    await fireReplaced(NEW_TAB, OLD_TAB); // ~1.5s: waits out the fallback poll internally
+    await fireReplaced(NEW_TAB, OLD_TAB); // ~2.5s: waits out the fallback poll internally
     expectNoRedirect(NEW_TAB);
 
     // The lock must not be left stuck — a subsequent normal navigation on a reused tab id
@@ -83,4 +124,4 @@ test('onReplaced gives up quietly (no crash, no stuck lock) if the tab is gone b
     await new Promise((resolve) => setTimeout(resolve, 1100));
     await fireUpdated(NEW_TAB, { url: YT_HOME, status: 'complete' }, { url: YT_HOME, status: 'complete' });
     expectPromptRedirect(NEW_TAB);
-}, 8000);
+}, 9000);
