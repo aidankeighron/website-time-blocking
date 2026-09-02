@@ -236,6 +236,11 @@ async function buildHalfFullPatternMap(entries, now = Date.now()) {
 // from silently getting billed as usage. 3x the content-script liveness-ping interval (30s).
 const SPAN_TOLERANCE_MS = 90000;
 
+// How long a count/single_url session can go untouched before it's treated as abandoned and
+// cleared. Mirrored across isSessionGrantingAccess and checkAccessSerialized — see comments
+// at each usage site for why they must stay in sync.
+const SESSION_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
+
 // Returns true if `entry`'s day-of-week + time-of-day window is active at `now`.
 // Overnight windows (end <= start) wrap past midnight: the evening portion checks curDay,
 // the early-morning portion (before `end`) checks the PREVIOUS calendar day's inclusion.
@@ -445,13 +450,13 @@ function isSessionGrantingAccess(session, now = Date.now()) {
         // A count session mid-cooldown can still legitimately access the homepage or rewatch
         // an already-whitelisted video (checkAccess only blocks NEW videos once capped) — so
         // "cooldownEndTime is set" alone does not mean not-granting. Mirror checkAccess's own
-        // two expiry conditions instead (cooldown fully expired, or 2 hours of inactivity).
-        // This also makes an abandoned under-target session (never hit its cap, tab just
-        // closed) self-correcting after 2 hours instead of reporting "granting" forever with
-        // nothing external to time it out.
+        // two expiry conditions instead (cooldown fully expired, or SESSION_INACTIVITY_TIMEOUT_MS
+        // of inactivity). This also makes an abandoned under-target session (never hit its cap,
+        // tab just closed) self-correcting after the timeout instead of reporting "granting"
+        // forever with nothing external to time it out.
         if (session.cooldownEndTime && now > session.cooldownEndTime) return false;
         const lastActive = session.lastActive || session.startTime;
-        return (now - lastActive) <= 2 * 60 * 60 * 1000;
+        return (now - lastActive) <= SESSION_INACTIVITY_TIMEOUT_MS;
     }
 
     if (session.type === 'single_url') {
@@ -459,10 +464,11 @@ function isSessionGrantingAccess(session, now = Date.now()) {
         // only when the user navigates away from the matching URL. For SPAN-tracking purposes
         // only, bound how long an abandoned one (tab closed without navigating away) can keep
         // phantom-crediting usage to unrelated scheduled-limit windows, mirroring count's same
-        // 2-hour ceiling. This does not change the single_url feature itself — a real revisit
-        // within the window still resumes normally via checkSingleUrlMatch regardless.
+        // SESSION_INACTIVITY_TIMEOUT_MS ceiling. This does not change the single_url feature
+        // itself — a real revisit within the window still resumes normally via
+        // checkSingleUrlMatch regardless.
         const lastActive = session.lastActive || session.startTime;
-        return (now - lastActive) <= 2 * 60 * 60 * 1000;
+        return (now - lastActive) <= SESSION_INACTIVITY_TIMEOUT_MS;
     }
 
     return false;
@@ -936,8 +942,8 @@ async function checkAccessSerialized(tabId, url, domain) {
                  return true;
             }
 
-            // Check for 2 hours inactivity (similar to unlimited)
-            if (now - (session.lastActive || session.startTime) > 2 * 60 * 60 * 1000) {
+            // Check for inactivity (similar to unlimited)
+            if (now - (session.lastActive || session.startTime) > SESSION_INACTIVITY_TIMEOUT_MS) {
                  // Session Expired due to inactivity
                  delete sessions[domain];
                  await chrome.storage.local.set({ activeSessions: sessions });

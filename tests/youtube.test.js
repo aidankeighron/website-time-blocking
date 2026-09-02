@@ -246,8 +246,8 @@ test('YouTube: startSession with video URL counts that video immediately', async
     expect(s.activeSessions['youtube.com'].targetCount).toBe(3);
 });
 
-// ── 13. Count session: 2-hour inactivity expires session ─────────────────────
-test('YouTube: count session expires after 2 hours of inactivity', async () => {
+// ── 13. Count session: 30-minute inactivity expires session ──────────────────
+test('YouTube: count session expires after 30 minutes of inactivity', async () => {
     setStorage({
         activeSessions: {
             'youtube.com': {
@@ -256,8 +256,8 @@ test('YouTube: count session expires after 2 hours of inactivity', async () => {
                 targetCount: 5,
                 videosWatched: 2,
                 watchedVideoIds: ['aaa111', 'bbb222'],
-                lastActive: NOW - 2 * 60 * 60 * 1000 - 1, // just over 2 hours ago
-                timeRangeLastCheck: NOW - 2 * 60 * 60 * 1000,
+                lastActive: NOW - 30 * 60 * 1000 - 1, // just over 30 minutes ago
+                timeRangeLastCheck: NOW - 30 * 60 * 1000,
             },
         },
     });

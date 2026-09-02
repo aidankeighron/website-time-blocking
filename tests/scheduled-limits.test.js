@@ -207,12 +207,12 @@ test('Count session\'s span closes once the cooldown has fully expired and the s
     expect(global.__store__.scheduledSpanStart).toBeNull();
 });
 
-test('BUG FIX: an abandoned under-target count session (never hit its cap) self-corrects after 2 hours of inactivity instead of keeping the span open forever', async () => {
+test('BUG FIX: an abandoned under-target count session (never hit its cap) self-corrects after 30 minutes of inactivity instead of keeping the span open forever', async () => {
     // Reproduces the exact gap found in review: nothing external ever revisits a session that
     // never hit its cap and was simply abandoned (tab closed). Without a self-correcting
     // isSessionGrantingAccess, this would keep the global span open — and every unrelated
     // scheduled limit's budget silently draining — indefinitely.
-    const staleLastActive = NOW - (3 * 60 * 60 * 1000); // 3 hours ago — past the 2h ceiling
+    const staleLastActive = NOW - (3 * 60 * 60 * 1000); // 3 hours ago — well past the 30m ceiling
     setStorage({
         scheduledLimits: [{ id: 'sl_cur', days: [TODAY], startHour: 0, startMinute: 0, endHour: 23, endMinute: 59, limitMinutes: 30 }],
         activeSessions: {
@@ -242,7 +242,7 @@ test('The session_<domain> duration-expiry alarm closes the span with zero navig
     expect(global.__store__.scheduledSpanStart).toBeNull();
 });
 
-test('BUG FIX: an abandoned single_url session (tab closed, never navigated away) self-corrects after 2 hours instead of keeping the span open forever', async () => {
+test('BUG FIX: an abandoned single_url session (tab closed, never navigated away) self-corrects after 30 minutes instead of keeping the span open forever', async () => {
     // single_url sessions have no natural expiry in checkAccess (by design — "finish this one
     // post/video" has no fixed duration) and are only cleaned up by navigating away from the
     // matching URL. If the tab is just closed instead, nothing ever revisits it. Without a
