@@ -37,7 +37,7 @@ test('An abandoned session does not get a free usage top-up when unrelated activ
         scheduledSpanLastLiveness: now - 10 * 60 * 1000,
         // The count session responsible for that span: abandoned in cooldown, untouched for the
         // same 10 minutes. isSessionGrantingAccess still calls this "granting" (well under its
-        // lenient 2-hour tolerance) even though nothing is actually happening.
+        // lenient 30-minute tolerance) even though nothing is actually happening.
         activeSessions: {
             'youtube.com': {
                 type: 'count',

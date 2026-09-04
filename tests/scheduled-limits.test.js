@@ -119,6 +119,51 @@ test('Full-block entry overrides an active duration session — still blocked', 
 });
 
 // ────────────────────────────────────────────────────────────────────────────
+// Half-Full-conditional entries: alarm scheduling must not go blind to pattern state
+// ────────────────────────────────────────────────────────────────────────────
+
+// Regression test: computeNextEventTime used to schedule an entry's alarm purely off usage/
+// window-end, with zero awareness of halfFullPattern — so an entry whose budget/window was
+// hours away would never get proactively re-evaluated, even though its actual blocking state
+// can flip the instant a task is completed/added in a totally separate app, with no navigation
+// to trigger a lazy recheck. The fix forces a periodic recheck at the Half-Full task-cache TTL
+// (2 minutes) for any entry carrying a halfFullPattern.
+test('Half-Full-conditional entry gets a periodic recheck alarm within the cache TTL, not just at window-end/exhaustion', async () => {
+    const entry = {
+        id: 'sl_hf', days: ALL_DAYS, startHour: 0, startMinute: 0, endHour: 23, endMinute: 59,
+        limitMinutes: 600, // budget far from exhausted — window-end is many hours away
+        halfFullPattern: { id: 'p1', pattern: 'homework', type: 'contains', color: 'purple' },
+    };
+    setStorage({ scheduledLimits: [entry], scheduledUsage: {} });
+
+    await fireMessage({ action: 'scheduledLimitsChanged' });
+
+    const calls = __mockFns__['alarms.create'].mock.calls.filter(([name]) => name === 'schedlimit_sl_hf');
+    expect(calls.length).toBeGreaterThan(0);
+    const { when } = calls[calls.length - 1][1];
+    // Without the fix this would be scheduled near end-of-day (hours away); with it, it must
+    // fire within one Half-Full cache TTL (2 minutes) instead.
+    expect(when).toBeGreaterThan(NOW);
+    expect(when).toBeLessThanOrEqual(NOW + 2 * 60 * 1000 + 5000); // +5s slack for test wall-clock
+});
+
+test('A non-Half-Full entry is unaffected: still scheduled at its real exhaustion/window-end time', async () => {
+    const entry = {
+        id: 'sl_plain', days: ALL_DAYS, startHour: 0, startMinute: 0, endHour: 23, endMinute: 59,
+        limitMinutes: 600,
+    };
+    setStorage({ scheduledLimits: [entry], scheduledUsage: {} });
+
+    await fireMessage({ action: 'scheduledLimitsChanged' });
+
+    const calls = __mockFns__['alarms.create'].mock.calls.filter(([name]) => name === 'schedlimit_sl_plain');
+    expect(calls.length).toBeGreaterThan(0);
+    const { when } = calls[calls.length - 1][1];
+    // No halfFullPattern — must NOT be pulled in to the 2-minute ceiling.
+    expect(when).toBeGreaterThan(NOW + 2 * 60 * 1000 + 5000);
+});
+
+// ────────────────────────────────────────────────────────────────────────────
 // Span open/close reconciliation (syncSpanState)
 // ────────────────────────────────────────────────────────────────────────────
 

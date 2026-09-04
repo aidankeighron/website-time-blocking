@@ -39,8 +39,11 @@ if (window.history.replaceState) {
 
 function getDomain(url) {
     try {
-        const hostname = new URL(url).hostname;
-        return hostname.replace(/^(www\.|m\.|mobile\.)/, '');
+        const hostname = new URL(url).hostname.replace(/^(www\.|m\.|mobile\.)/, '');
+        // Must match background.js's getDomain exactly, including the youtu.be alias — this is
+        // what's used to look up the right activeSessions/cooldowns entry for a youtu.be intent.
+        if (hostname === 'youtu.be') return 'youtube.com';
+        return hostname;
     } catch (e) {
         return null;
     }
@@ -251,12 +254,20 @@ function isSpecificContent(url) {
     if (!url) return false;
     try {
         const u = new URL(url);
-        if (u.hostname.includes('youtube.com') || u.hostname.includes('youtu.be')) {
+        // youtu.be short links carry the video ID in the path, not a `v` query param — without
+        // this branch "Finish Video" never appears for a youtu.be link (mirrors the same fix in
+        // background.js's getYouTubeVideoId).
+        if (u.hostname.includes('youtu.be')) {
+            if (u.pathname.length > 1) return true;
+        } else if (u.hostname.includes('youtube.com')) {
             if (u.pathname.startsWith('/shorts/')) return true;
             if (u.searchParams.get('v')) return true;
         }
         if (u.hostname.includes('reddit.com')) {
             if (u.pathname.match(/\/r\/[\w-]+\/comments\/[\w]+\/?/)) return true;
+        }
+        if (u.hostname.includes('instagram.com')) {
+            if (u.pathname.match(/\/(p|reel|tv)\/[\w-]+\/?/)) return true;
         }
     } catch(e) {}
     return false;
@@ -305,6 +316,22 @@ function showCooldownUI(endTime, cooldownInfo, delay = 0, extensionDuration = 30
 
     const extendBtn = canExtend ? document.getElementById('extend-btn') : null;
     const finishBtn = canFinish ? document.getElementById('finish-btn') : null;
+
+    // The countdown text was computed once at render time and never updated, so a cooldown tab
+    // left open showed a number that got progressively wrong and never reached 0. Tick it down
+    // for real, and once time's actually up, re-navigate so the real access check (which is the
+    // sole source of truth for whether the cooldown has ended) runs instead of the UI just
+    // guessing it's over.
+    const cdTimerEl = document.getElementById('cd-timer');
+    const cdInterval = setInterval(() => {
+        const remainingMs = endTime - Date.now();
+        if (remainingMs <= 0) {
+            clearInterval(cdInterval);
+            window.location.replace(intendedUrl);
+            return;
+        }
+        cdTimerEl.textContent = Math.ceil(remainingMs / 60000);
+    }, 1000);
 
     if (delay > 0) {
         let timeLeft = delay;

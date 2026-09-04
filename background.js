@@ -28,10 +28,8 @@ const lastCheckedDomain = new Map();
 // because there IS no domain yet; that's the whole thing being resolved.
 const pendingReplacementResolution = new Set();
 
-// TEMPORARY — see BLOCKING_UI_BUG_HANDOFF.md action item 6. Remove every `if (WTB_DEBUG)`
-// block (and this line) once the user confirms the autofill/prerender-navigation fix on their
-// next repro.
-const WTB_DEBUG = true;
+// Verbose console logging for navigation/session-flow debugging. Leave off in normal use.
+const WTB_DEBUG = false;
 
 // --- Half Full Integration ---
 //
@@ -241,6 +239,20 @@ const SPAN_TOLERANCE_MS = 90000;
 // at each usage site for why they must stay in sync.
 const SESSION_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
 
+// (Re)schedules the count_inactivity_<domain> proactive backstop alarm for `session` at the
+// EARLIER of its two lazy expiry conditions (mirrors checkAccessSerialized's own
+// cooldownEndTime-vs-inactivity check, see the count_inactivity_ alarm handler). Using the plain
+// lastActive+timeout instant here — without ever consulting cooldownEndTime — would leave a
+// short countCooldown (e.g. 5 minutes, shorter than SESSION_INACTIVITY_TIMEOUT_MS) sitting
+// unenforced by any alarm until the later inactivity instant, the exact same class of "sits
+// there stale until something else happens to revisit it" bug this alarm exists to close.
+function scheduleCountInactivityAlarm(domain, session, now = Date.now()) {
+    const lastActive = session.lastActive || session.startTime;
+    let when = lastActive + SESSION_INACTIVITY_TIMEOUT_MS;
+    if (session.cooldownEndTime) when = Math.min(when, session.cooldownEndTime);
+    chrome.alarms.create(`count_inactivity_${domain}`, { when });
+}
+
 // Returns true if `entry`'s day-of-week + time-of-day window is active at `now`.
 // Overnight windows (end <= start) wrap past midnight: the evening portion checks curDay,
 // the early-morning portion (before `end`) checks the PREVIOUS calendar day's inclusion.
@@ -389,12 +401,20 @@ function checkScheduledLimits(entries, usage, spanStart, lastLiveness, now = Dat
 function computeNextEventTime(entry, usage, spanStart, lastLiveness, now = Date.now()) {
     if (!isWindowActive(entry, now)) return getNextWindowStartTimestamp(entry, now);
     const windowEnd = getWindowEndTimestamp(entry, now);
-    if (entry.limitMinutes === 0) return windowEnd;
+
+    // Half-Full-conditional entries can flip blocking state at any moment as the user's tasks
+    // are completed/added in an entirely separate app — that's not a schedulable clock event,
+    // so instead of trying to predict it, force a periodic recheck at the cache TTL. Without
+    // this, an entry whose usage/window-end next-event is hours away would never get proactively
+    // re-evaluated if a task un-completes mid-window with no navigation to trigger a lazy check.
+    const hfCeiling = entry.halfFullPattern ? now + HF_TASK_CACHE_TTL_MS : Infinity;
+
+    if (entry.limitMinutes === 0) return Math.min(windowEnd, hfCeiling);
 
     const budget = entry.limitMinutes * 60;
     const usedNow = computeUsedSeconds(entry, usage, spanStart, lastLiveness, now);
-    if (usedNow >= budget) return windowEnd;
-    if (spanStart == null) return windowEnd; // nobody browsing; nothing pending
+    if (usedNow >= budget) return Math.min(windowEnd, hfCeiling);
+    if (spanStart == null) return Math.min(windowEnd, hfCeiling); // nobody browsing; nothing pending
 
     const dateKey = getWindowDateKey(entry, now);
     const rec = usage[entry.id];
@@ -403,7 +423,7 @@ function computeNextEventTime(entry, usage, spanStart, lastLiveness, now = Date.
     const effectiveStart = effectiveSpanStartFor(entry, spanStart, occurrenceStart);
 
     const projectedExhaustion = effectiveStart + (budget - banked) * 1000;
-    return Math.min(projectedExhaustion, windowEnd);
+    return Math.min(projectedExhaustion, windowEnd, hfCeiling);
 }
 
 // Schedules (or reschedules) the single self-managing alarm for `entry` at its next event
@@ -480,13 +500,14 @@ function isAnySessionGrantingAccess(sessions, now = Date.now()) {
 
 // Stricter than isSessionGrantingAccess: true only if this session has been touched within the
 // last SPAN_TOLERANCE_MS. Used specifically to gate re-opening a span that just closed due to
-// staleness. isSessionGrantingAccess's generous "up to 2 hours since last touch" leniency for
-// count/single_url sessions is intentional for NOT prematurely ending an open span over a brief
-// gap — but using that same leniency to justify OPENING a brand new span (i.e. starting to bill
-// again) let an abandoned, idle session (e.g. a count session sitting untouched in cooldown)
-// collect a free SPAN_TOLERANCE_MS top-up every time anything else in the extension happened to
-// run reconciliation, with zero real usage behind it. Re-opening needs genuinely fresh evidence
-// of activity, not just "this session record hasn't technically expired yet".
+// staleness. isSessionGrantingAccess's generous "up to SESSION_INACTIVITY_TIMEOUT_MS since last
+// touch" leniency for count/single_url sessions is intentional for NOT prematurely ending an
+// open span over a brief gap — but using that same leniency to justify OPENING a brand new span
+// (i.e. starting to bill again) let an abandoned, idle session (e.g. a count session sitting
+// untouched in cooldown) collect a free SPAN_TOLERANCE_MS top-up every time anything else in the
+// extension happened to run reconciliation, with zero real usage behind it. Re-opening needs
+// genuinely fresh evidence of activity, not just "this session record hasn't technically expired
+// yet".
 function isSessionFreshlyActive(session, now = Date.now()) {
     if (session.type === 'duration') return now < session.endTime;
     const lastActive = session.lastActive || session.startTime;
@@ -610,8 +631,14 @@ async function syncSpanStateSerialized(now = Date.now()) {
 // Helper to get domain
 function getDomain(url) {
     try {
-        const hostname = new URL(url).hostname;
-        return hostname.replace(/^(www\.|m\.|mobile\.)/, '');
+        const hostname = new URL(url).hostname.replace(/^(www\.|m\.|mobile\.)/, '');
+        // youtu.be is YouTube's own short-link domain for the exact same site/videos — without
+        // this alias it's treated as an entirely different, non-target domain: isTargetSite
+        // never matches it (targetSites only ever contains "youtube.com"), so a youtu.be link
+        // silently bypasses blocking, video counting, and any active youtube.com session
+        // entirely, regardless of what getYouTubeVideoId can extract from it.
+        if (hostname === 'youtu.be') return 'youtube.com';
+        return hostname;
     } catch (e) {
         return null;
     }
@@ -981,6 +1008,11 @@ async function checkAccessSerialized(tabId, url, domain) {
 
                          sessions[domain] = session;
                          await chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
+                         // This can be the very first place cooldownEndTime is ever set for this
+                         // session (e.g. targetCount 0, or opening straight into an over-cap
+                         // video) — pull the alarm in to match it, in case it's sooner than
+                         // whatever inactivity-only timing was previously scheduled.
+                         scheduleCountInactivityAlarm(domain, session, now);
                     }
 
                     await syncSpanStateSerialized(now);
@@ -991,7 +1023,6 @@ async function checkAccessSerialized(tabId, url, domain) {
                      // Add to whitelist
                      session.watchedVideoIds.push(videoId);
                      session.lastActive = now;
-                     chrome.alarms.create(`count_inactivity_${domain}`, { when: now + SESSION_INACTIVITY_TIMEOUT_MS });
 
                      // Check if we just hit the limit (Nth video) — cooldown starts NOW even
                      // though this navigation (the Nth video itself) is still allowed through.
@@ -1007,6 +1038,10 @@ async function checkAccessSerialized(tabId, url, domain) {
                          };
                      }
 
+                    // After any cooldownEndTime this navigation may have just set above, so a
+                    // short countCooldown gets scheduled against, not just the longer
+                    // inactivity-only fallback.
+                    scheduleCountInactivityAlarm(domain, session, now);
                     sessions[domain] = session;
                     await chrome.storage.local.set({ activeSessions: sessions, cooldowns: cooldowns });
                 }
@@ -1014,7 +1049,7 @@ async function checkAccessSerialized(tabId, url, domain) {
                  // Watching a known/whitelisted video OR not a video page
                  if (!session.lastActive || now - session.lastActive > 5000) { // 5s throttle
                      session.lastActive = now;
-                     chrome.alarms.create(`count_inactivity_${domain}`, { when: now + SESSION_INACTIVITY_TIMEOUT_MS });
+                     scheduleCountInactivityAlarm(domain, session, now);
                      sessions[domain] = session;
                      await chrome.storage.local.set({ activeSessions: sessions });
                  }
@@ -1091,6 +1126,17 @@ function checkSingleUrlMatch(currentUrl, targetUrl) {
             if (currMatch && tgtMatch && currMatch[1] === tgtMatch[1]) return true;
             return false;
         }
+        if (curr.hostname.includes('instagram.com') && tgt.hostname.includes('instagram.com')) {
+            // Real Instagram post URLs commonly vary by query param (carousel index, tracking
+            // params) between loads of the SAME post — comparing the post ID out of the path
+            // (like the YouTube/Reddit branches above) instead of the full URL avoids treating
+            // that as "navigated away" and prematurely ending the session.
+            const igPostRegex = /\/(p|reel|tv)\/([\w-]+)/;
+            const currMatch = curr.pathname.match(igPostRegex);
+            const tgtMatch = tgt.pathname.match(igPostRegex);
+            if (currMatch && tgtMatch && currMatch[2] === tgtMatch[2]) return true;
+            return false;
+        }
         return false;
     } catch(e) {
         return false;
@@ -1100,7 +1146,12 @@ function checkSingleUrlMatch(currentUrl, targetUrl) {
 function getYouTubeVideoId(url) {
     try {
         const u = new URL(url);
-        if (u.hostname.includes('youtube.com') || u.hostname.includes('youtu.be')) {
+        // youtu.be short links carry the video ID in the path (youtu.be/VIDEO_ID), not a `v`
+        // query param — without this branch every youtu.be link resolves to no ID at all.
+        if (u.hostname.includes('youtu.be')) {
+            return u.pathname.slice(1).split('/')[0] || null;
+        }
+        if (u.hostname.includes('youtube.com')) {
             if (u.pathname.startsWith('/shorts/')) {
                 return u.pathname.split('/shorts/')[1].split('/')[0];
             }
@@ -1502,7 +1553,7 @@ async function startSessionInternal(url, type, value, origin, originTabId) {
         // this, an abandoned session (e.g. browser closed for the day, no navigation event ever
         // fires again) just sits in storage forever showing stale progress, since nothing else
         // ever revisits it. Rescheduled (via the same alarm name) every time lastActive moves.
-        chrome.alarms.create(`count_inactivity_${domain}`, { when: Date.now() + SESSION_INACTIVITY_TIMEOUT_MS });
+        scheduleCountInactivityAlarm(domain, session);
     } else if (type === 'single_url') {
         session.targetUrl = value;
     }

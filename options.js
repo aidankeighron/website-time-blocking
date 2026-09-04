@@ -40,7 +40,11 @@ function getDomain(url) {
     try {
         if (!url.startsWith('http')) url = 'https://' + url;
         const hostname = new URL(url).hostname;
-        return hostname.replace(/^www\./, '');
+        // Must match background.js/prompt.js's own getDomain exactly — those strip m./mobile.
+        // in addition to www. when matching a real navigation's hostname. A target site saved
+        // here without this normalization (e.g. typing "m.youtube.com") could never match a
+        // real navigation, since the actual traffic always gets normalized down to "youtube.com".
+        return hostname.replace(/^(www\.|m\.|mobile\.)/, '');
     } catch (e) {
         return null;
     }
@@ -96,10 +100,14 @@ function addSite() {
 }
 
 function saveOptions() {
-    const durationCooldown = parseInt(document.getElementById('duration-cooldown').value, 10);
-    const countCooldown = parseInt(document.getElementById('count-cooldown').value, 10);
-    const inputDelay = parseInt(document.getElementById('input-delay').value, 10);
-    const extensionDuration = parseInt(document.getElementById('extension-duration').value, 10);
+    // Fall back to the same defaults restoreOptions/background.js already use elsewhere when a
+    // field is cleared before saving — parseInt('') is NaN, and persisting NaN silently breaks
+    // every downstream `value * 60 * 1000` computation for that setting until the user notices
+    // and re-enters a number.
+    const durationCooldown = parseInt(document.getElementById('duration-cooldown').value, 10) || 30;
+    const countCooldown = parseInt(document.getElementById('count-cooldown').value, 10) || 30;
+    const inputDelay = parseInt(document.getElementById('input-delay').value, 10) || 0;
+    const extensionDuration = parseInt(document.getElementById('extension-duration').value, 10) || 30;
     const targetSites = Array.from(document.querySelectorAll('#site-list li')).map(li => li.childNodes[0].textContent);
     chrome.storage.local.set({ targetSites, durationCooldown, countCooldown, inputDelay, extensionDuration }, () => {
         showStatus('Settings saved.');
@@ -214,13 +222,38 @@ function updateSlOvernightHint() {
 }
 
 // Populate the Half Full pattern dropdown from stored patterns.
-function populatePatternDropdown(selectedPatternId = '') {
+// fallbackPattern: the entry-being-edited's OWN stored halfFullPattern object, if any. If that
+// pattern's id isn't in the current halfFullPatterns cache (deleted in Half Full since this
+// limit was created, or just not fetched yet), synthesize an option for it from its own stored
+// fields. Without this, editing a limit for a completely unrelated reason (e.g. only the time)
+// silently selected "Always active" and saveScheduledLimit persisted that as if the user had
+// deliberately removed the condition.
+function populatePatternDropdown(selectedPatternId = '', fallbackPattern = null) {
     chrome.storage.local.get({ halfFullPatterns: [], halfFullAuth: null }, (data) => {
         const select = document.getElementById('sl-hf-pattern');
         const hint   = document.getElementById('sl-hf-pattern-hint');
 
         // Clear all options except the "no condition" placeholder
         select.innerHTML = '<option value="">Always active</option>';
+
+        const patterns = (data.halfFullPatterns || []).slice();
+        if (fallbackPattern && !patterns.some(p => p.id === fallbackPattern.id)) {
+            patterns.push({ ...fallbackPattern, _stale: true });
+        }
+
+        patterns.forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p.id;
+            // Show the pattern keyword and its match type in the dropdown
+            const typeLabel = p.type === 'start' ? 'starts with' : p.type === 'end' ? 'ends with' : 'contains';
+            opt.textContent = p._stale
+                ? `${p.pattern}  (${typeLabel}) — no longer available`
+                : `${p.pattern}  (${typeLabel})`;
+            opt.style.backgroundColor = hfPatternColor(p.color);
+            opt.style.color = '#fff';
+            if (p.id === selectedPatternId) opt.selected = true;
+            select.appendChild(opt);
+        });
 
         if (!data.halfFullAuth) {
             hint.style.display = 'block';
@@ -230,18 +263,6 @@ function populatePatternDropdown(selectedPatternId = '') {
 
         hint.style.display = 'block';
         hint.textContent = 'This limit only applies when you have incomplete tasks matching the selected pattern today.';
-
-        (data.halfFullPatterns || []).forEach(p => {
-            const opt = document.createElement('option');
-            opt.value = p.id;
-            // Show the pattern keyword and its match type in the dropdown
-            const typeLabel = p.type === 'start' ? 'starts with' : p.type === 'end' ? 'ends with' : 'contains';
-            opt.textContent = `${p.pattern}  (${typeLabel})`;
-            opt.style.backgroundColor = hfPatternColor(p.color);
-            opt.style.color = '#fff';
-            if (p.id === selectedPatternId) opt.selected = true;
-            select.appendChild(opt);
-        });
     });
 }
 
@@ -268,7 +289,7 @@ function openScheduledLimitModal(existingEntry) {
     document.getElementById('sl-end').oninput   = updateSlOvernightHint;
 
     const selectedPatternId = existingEntry && existingEntry.halfFullPattern ? existingEntry.halfFullPattern.id : '';
-    populatePatternDropdown(selectedPatternId);
+    populatePatternDropdown(selectedPatternId, existingEntry ? existingEntry.halfFullPattern : null);
 
     document.getElementById('scheduled-limit-modal').style.display = 'flex';
 }
@@ -304,6 +325,15 @@ function saveScheduledLimit() {
             const pat = data.halfFullPatterns.find(p => p.id === selectedPatternId);
             if (pat) {
                 halfFullPattern = { id: pat.id, pattern: pat.pattern, type: pat.type, color: pat.color };
+            } else if (editingLimitId) {
+                // Not in the fresh local cache — this is the "stale" case populatePatternDropdown
+                // synthesizes an option for (pattern deleted in Half Full, or not fetched yet). If
+                // the selection still matches this entry's own previously-saved pattern, preserve
+                // it verbatim instead of treating "not in the fresh cache" as "user cleared it".
+                const existing = data.scheduledLimits.find(e => e.id === editingLimitId);
+                if (existing && existing.halfFullPattern && existing.halfFullPattern.id === selectedPatternId) {
+                    halfFullPattern = existing.halfFullPattern;
+                }
             }
         }
 
@@ -321,7 +351,7 @@ function saveScheduledLimit() {
             });
         } else {
             const newEntry = {
-                id: `sl_${Date.now()}`,
+                id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
                 days, startHour, startMinute, endHour, endMinute,
                 limitMinutes: limitVal,
                 createdAt: Date.now(),

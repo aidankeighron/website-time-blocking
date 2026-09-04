@@ -305,6 +305,102 @@ test('saved entry can be removed via the list Remove button and notifies backgro
 // restoreOptions reads storage directly (no migration system anymore)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// addSite domain normalization
+// ---------------------------------------------------------------------------
+// Regression test: options.js's own getDomain used to only strip "www." while background.js/
+// prompt.js strip "www./m./mobile." when matching a real navigation's hostname — a site added
+// here as "m.youtube.com" was saved verbatim and could then never match anything, since real
+// traffic always normalizes down to "youtube.com" before comparison.
+
+test('Adding "m.youtube.com" normalizes to "youtube.com", matching what background.js matches against', () => {
+    document.getElementById('new-site').value = 'm.youtube.com';
+    document.getElementById('add-site').click();
+
+    const sites = Array.from(document.querySelectorAll('#site-list li')).map(li => li.childNodes[0].textContent);
+    expect(sites).toContain('youtube.com');
+    expect(sites).not.toContain('m.youtube.com');
+});
+
+test('Adding "mobile.twitter.com" normalizes to "twitter.com"', () => {
+    document.getElementById('new-site').value = 'mobile.twitter.com';
+    document.getElementById('add-site').click();
+
+    const sites = Array.from(document.querySelectorAll('#site-list li')).map(li => li.childNodes[0].textContent);
+    expect(sites).toContain('twitter.com');
+});
+
+// ---------------------------------------------------------------------------
+// saveOptions numeric field validation
+// ---------------------------------------------------------------------------
+// Regression test: clearing a numeric settings field before saving used to persist NaN
+// (parseInt('') is NaN with no fallback), silently breaking every downstream
+// `value * 60 * 1000` computation for that setting.
+
+test('Clearing a numeric settings field before saving falls back to its default instead of persisting NaN', done => {
+    const store = {};
+    setupChrome(store);
+    loadOptionsPage();
+    document.dispatchEvent(new Event('DOMContentLoaded'));
+
+    document.getElementById('duration-cooldown').value = '';
+    document.getElementById('count-cooldown').value = '';
+    document.getElementById('input-delay').value = '';
+    document.getElementById('extension-duration').value = '';
+    document.getElementById('save-config').click();
+
+    setTimeout(() => {
+        expect(store.durationCooldown).toBe(30);
+        expect(store.countCooldown).toBe(30);
+        expect(store.inputDelay).toBe(0);
+        expect(store.extensionDuration).toBe(30);
+        expect(Number.isNaN(store.durationCooldown)).toBe(false);
+        done();
+    }, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Editing a scheduled limit whose Half-Full pattern is no longer locally known
+// ---------------------------------------------------------------------------
+// Regression test: openScheduledLimitModal populates the pattern dropdown from the LOCAL
+// halfFullPatterns cache. If the entry's own halfFullPattern.id isn't in that cache (deleted in
+// Half Full since this limit was created, or simply not fetched yet), the dropdown silently
+// fell back to "Always active" — and saving (even to change something unrelated, like the time)
+// persisted that as if the user had deliberately removed the condition.
+
+test('Editing an entry whose halfFullPattern is not in the local pattern cache preserves it on save', done => {
+    const store = {
+        halfFullAuth: { email: 'a@b.com', uid: 'u1' },
+        // Note: halfFullPatterns does NOT contain 'p1' (deleted, or not-yet-fetched race).
+        halfFullPatterns: [{ id: 'p2', pattern: 'chores', type: 'any', color: 'blue' }],
+        scheduledLimits: [{
+            id: 'sl_1', days: [1], startHour: 9, startMinute: 0, endHour: 17, endMinute: 0,
+            limitMinutes: 30, createdAt: 12345,
+            halfFullPattern: { id: 'p1', pattern: 'homework', type: 'contains', color: 'purple' },
+        }],
+    };
+    setupChrome(store);
+    loadOptionsPage();
+    document.dispatchEvent(new Event('DOMContentLoaded'));
+
+    document.querySelector('#scheduled-limit-list .btn-secondary').click(); // "Edit" button
+
+    setTimeout(() => {
+        // The stale pattern must still be selected in the dropdown, not silently reset.
+        const select = document.getElementById('sl-hf-pattern');
+        expect(select.value).toBe('p1');
+
+        // User saves without touching the pattern dropdown (e.g. only wanted to tweak the time).
+        document.getElementById('sl-save-btn').click();
+
+        setTimeout(() => {
+            const saved = store.scheduledLimits[0];
+            expect(saved.halfFullPattern).toEqual({ id: 'p1', pattern: 'homework', type: 'contains', color: 'purple' });
+            done();
+        }, 0);
+    }, 0);
+});
+
 test('restoreOptions reads scheduledLimits directly from storage with no sendMessage call', () => {
     const store = { scheduledLimits: [{ id: 'sl_1', days: [1], startHour: 9, startMinute: 0, endHour: 10, endMinute: 0, limitMinutes: 20 }] };
     setupChrome(store);

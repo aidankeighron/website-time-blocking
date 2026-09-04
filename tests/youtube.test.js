@@ -227,6 +227,42 @@ test('YouTube Shorts: video ID extracted and counted', async () => {
     expect(s.activeSessions['youtube.com'].watchedVideoIds).toContain('sss999');
 });
 
+// ── 11b. Count session: youtu.be short link is recognized as youtube.com and counted ──────────
+// Regression test: getDomain() used to return "youtu.be" verbatim (no alias to "youtube.com"),
+// so isTargetSite (which only ever matches against "youtube.com") never matched a youtu.be link
+// at all — it bypassed blocking, counting, and any active youtube.com session entirely, silently
+// passing straight through. getYouTubeVideoId's own youtu.be handling only matters once this
+// domain alias exists to route the navigation through checkAccess in the first place.
+test('YouTube: youtu.be short link is treated as youtube.com and its video ID is counted', async () => {
+    setStorage({
+        activeSessions: {
+            'youtube.com': {
+                type: 'count',
+                startTime: NOW,
+                targetCount: 3,
+                videosWatched: 0,
+                watchedVideoIds: [],
+                lastActive: NOW,
+                timeRangeLastCheck: NOW,
+            },
+        },
+        countCooldown: 30,
+    });
+    await nav('https://youtu.be/xyz789?t=15');
+    expectNoRedirect(TAB);
+    const s = global.__store__;
+    expect(s.activeSessions['youtube.com'].videosWatched).toBe(1);
+    expect(s.activeSessions['youtube.com'].watchedVideoIds).toContain('xyz789');
+});
+
+// ── 11c. youtu.be link is blocked (as youtube.com) with no session ────────────────────────────
+test('YouTube: youtu.be short link with no session redirects to prompt', async () => {
+    await nav('https://youtu.be/xyz789');
+    expectPromptRedirect(TAB);
+    const url = __mockFns__['tabs.update'].mock.calls[0][1].url;
+    expect(url).toContain(encodeURIComponent('https://youtu.be/xyz789'));
+});
+
 // ── 12. Count session: count session starts with first video from prompt URL ──
 test('YouTube: startSession with video URL counts that video immediately', async () => {
     // Simulate what happens after user fills prompt on VIDEO_A:
@@ -315,6 +351,37 @@ test('YouTube: count_inactivity alarm does nothing if the session is fresh again
 
     expect(global.__store__.activeSessions['youtube.com']).toBeDefined();
     expectNoRedirect(TAB);
+});
+
+// ── 13d. Short countCooldown pulls the inactivity alarm in to match it ───────────────────────
+// Regression test: the count_inactivity alarm used to always be scheduled 30 minutes out from
+// lastActive, ignoring cooldownEndTime entirely — so a countCooldown shorter than 30 minutes
+// (here, 5) had no proactive alarm covering it at all, the same "sits there stale until
+// something else happens to revisit it" bug class this alarm exists to close.
+test('YouTube: reaching the cap with a short countCooldown schedules the alarm at cooldownEndTime, not 30 minutes out', async () => {
+    setStorage({
+        activeSessions: {
+            'youtube.com': {
+                type: 'count',
+                startTime: NOW - 60000,
+                targetCount: 1,
+                videosWatched: 0,
+                watchedVideoIds: [],
+                lastActive: NOW - 60000,
+            },
+        },
+        countCooldown: 5, // minutes — much shorter than SESSION_INACTIVITY_TIMEOUT_MS (30m)
+    });
+    await nav(VIDEO_A); // the 1st (== target) video — hits cap, starts a 5-minute cooldown
+    expectNoRedirect(TAB); // this navigation itself is still allowed through
+
+    const session = global.__store__.activeSessions['youtube.com'];
+    expect(session.cooldownEndTime).toBeLessThan(NOW + 30 * 60 * 1000);
+
+    const calls = __mockFns__['alarms.create'].mock.calls.filter(([name]) => name === 'count_inactivity_youtube.com');
+    expect(calls.length).toBeGreaterThan(0);
+    const { when } = calls[calls.length - 1][1];
+    expect(when).toBe(session.cooldownEndTime);
 });
 
 // ── 14. Count session with active cooldownEndTime → blocked ──────────────────

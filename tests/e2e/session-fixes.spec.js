@@ -38,6 +38,22 @@ test('Extend resumes the original cooldown instead of resetting a fresh one', as
     expect(remainingMs).toBeGreaterThan(0);
 });
 
+test('Cooldown countdown auto-releases once the real cooldown ends, without a manual reload', async ({ page, storage }) => {
+    // Regression test: the "X minutes left" text used to be computed once at render time and
+    // never updated — a cooldown tab left open just sat on a stale, eventually-wrong number
+    // forever, even long after the real cooldown had actually ended.
+    const now = Date.now();
+    await storage.set({
+        cooldowns: { 'youtube.com': { startTime: now - 30 * 1000, duration: 32 * 1000, originalType: 'duration' } }, // ~2s left
+    });
+    await expectBlocked(page, YT_HOME);
+    await expect(page.locator('h1')).toContainText('Cooldown Active');
+
+    // Wait past the real end time with no interaction at all — the page must notice on its own
+    // and move on to the real, now-cooldown-free access check (a fresh prompt).
+    await expect(page.locator('h1')).not.toContainText('Cooldown Active', { timeout: 6000 });
+});
+
 test('A stale fresh-picker tab cannot bypass a cooldown that started after it rendered', async ({ page, storage }) => {
     await expectBlocked(page, VIDEO_A);
     // expectBlocked only confirms the URL landed on the block screen — prompt.js's own init()

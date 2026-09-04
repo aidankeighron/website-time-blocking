@@ -136,6 +136,45 @@ test('Instagram: single_url session allows the target post', async () => {
     expectNoRedirect(TAB);
 });
 
+// ── 8b. Single-URL session: same post with different query params still matches ────
+// Regression test: checkSingleUrlMatch used to fall through to literal full-URL string equality
+// for Instagram (no post-ID extraction, unlike the YouTube/Reddit branches), so a genuine
+// revisit of the SAME post whose URL happens to carry a different query param (carousel index,
+// tracking param — both common on real Instagram loads) was wrongly treated as "navigated away",
+// ending the session early.
+test('Instagram: single_url session allows the same post with a different query param', async () => {
+    setStorage({
+        activeSessions: {
+            'instagram.com': {
+                type: 'single_url',
+                startTime: NOW,
+                targetUrl: IG_POST,
+                timeRangeLastCheck: NOW,
+            },
+        },
+    });
+    await nav('https://www.instagram.com/p/ABC123/?img_index=2');
+    expectNoRedirect(TAB);
+});
+
+// ── 8c. Single-URL session: a genuinely different post is still blocked ────────────
+test('Instagram: single_url session blocks a genuinely different post', async () => {
+    setStorage({
+        activeSessions: {
+            'instagram.com': {
+                type: 'single_url',
+                startTime: NOW,
+                targetUrl: IG_POST,
+                timeRangeLastCheck: NOW,
+            },
+        },
+    });
+    await nav('https://www.instagram.com/p/XYZ999/');
+    expectPromptRedirect(TAB);
+    const url = __mockFns__['tabs.update'].mock.calls[0][1].url;
+    expect(url).toContain('Finished');
+});
+
 // ── 9. Single-URL session navigating to homepage ends session + blocks ──────
 test('Instagram: single_url session blocks navigation to different page', async () => {
     setStorage({
