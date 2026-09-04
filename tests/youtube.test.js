@@ -1,5 +1,5 @@
 const {
-    loadBackground, fireUpdated, setStorage,
+    loadBackground, fireUpdated, fireAlarm, setStorage,
     expectPromptRedirect, expectNoRedirect, flushPromises, NOW,
 } = require('./helpers');
 
@@ -265,6 +265,56 @@ test('YouTube: count session expires after 30 minutes of inactivity', async () =
     expectPromptRedirect(TAB);
     const url = __mockFns__['tabs.update'].mock.calls[0][1].url;
     expect(url).toContain('Session%20Expired');
+});
+
+// ── 13b. Count session: inactivity alarm expires session with zero navigation ────────────────
+// Regression test: reported bug was "gone for a whole day, tab closed, came back to a new tab —
+// session still showed 5/9" — the lazy check only ever ran as a side effect of a navigation
+// event, so an abandoned session with no navigation event at all (browser closed the whole time)
+// never got cleared. count_inactivity_<domain> is the proactive backstop for exactly that case.
+test('YouTube: count_inactivity alarm expires an abandoned session even with no navigation at all', async () => {
+    setStorage({
+        activeSessions: {
+            'youtube.com': {
+                type: 'count',
+                startTime: NOW - 3 * 60 * 60 * 1000,
+                targetCount: 5,
+                videosWatched: 2,
+                watchedVideoIds: ['aaa111', 'bbb222'],
+                lastActive: NOW - 30 * 60 * 1000 - 1, // just over 30 minutes ago
+            },
+        },
+    });
+    __mockFns__['tabs.query'].mockResolvedValue([{ id: TAB, url: VIDEO_C }]);
+
+    await fireAlarm({ name: 'count_inactivity_youtube.com' });
+
+    expect(global.__store__.activeSessions['youtube.com']).toBeUndefined();
+    expectPromptRedirect(TAB);
+    const url = __mockFns__['tabs.update'].mock.calls[0][1].url;
+    expect(url).toContain('Session%20Expired');
+});
+
+// ── 13c. count_inactivity alarm is a no-op if activity resumed since it was scheduled ────────
+test('YouTube: count_inactivity alarm does nothing if the session is fresh again by the time it fires', async () => {
+    setStorage({
+        activeSessions: {
+            'youtube.com': {
+                type: 'count',
+                startTime: NOW - 3 * 60 * 60 * 1000,
+                targetCount: 5,
+                videosWatched: 2,
+                watchedVideoIds: ['aaa111', 'bbb222'],
+                lastActive: NOW, // fresh — activity resumed since this alarm was scheduled
+            },
+        },
+    });
+    __mockFns__['tabs.query'].mockResolvedValue([{ id: TAB, url: VIDEO_C }]);
+
+    await fireAlarm({ name: 'count_inactivity_youtube.com' });
+
+    expect(global.__store__.activeSessions['youtube.com']).toBeDefined();
+    expectNoRedirect(TAB);
 });
 
 // ── 14. Count session with active cooldownEndTime → blocked ──────────────────

@@ -48,7 +48,7 @@ test('startSession message creates duration session and sets alarm', async () =>
     expect(alarmArgs[0]).toBe('session_youtube.com');
 });
 
-test('startSession message creates count session without alarm', async () => {
+test('startSession message creates count session and sets an inactivity backstop alarm', async () => {
     const response = await new Promise((resolve) => {
         global.__listeners__.onMessage.forEach(fn =>
             fn(
@@ -62,7 +62,10 @@ test('startSession message creates count session without alarm', async () => {
     const s = global.__store__;
     expect(s.activeSessions['youtube.com'].type).toBe('count');
     expect(s.activeSessions['youtube.com'].targetCount).toBe(5);
-    expect(__mockFns__['alarms.create'].mock.calls.length).toBe(0);
+    // count_inactivity_<domain> alarm should have been created as the proactive backstop for
+    // the lazy navigation-triggered inactivity check.
+    const alarmArgs = __mockFns__['alarms.create'].mock.calls[0];
+    expect(alarmArgs[0]).toBe('count_inactivity_youtube.com');
 });
 
 test('startSession message creates single_url session', async () => {

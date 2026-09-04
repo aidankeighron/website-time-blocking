@@ -991,6 +991,7 @@ async function checkAccessSerialized(tabId, url, domain) {
                      // Add to whitelist
                      session.watchedVideoIds.push(videoId);
                      session.lastActive = now;
+                     chrome.alarms.create(`count_inactivity_${domain}`, { when: now + SESSION_INACTIVITY_TIMEOUT_MS });
 
                      // Check if we just hit the limit (Nth video) — cooldown starts NOW even
                      // though this navigation (the Nth video itself) is still allowed through.
@@ -1013,6 +1014,7 @@ async function checkAccessSerialized(tabId, url, domain) {
                  // Watching a known/whitelisted video OR not a video page
                  if (!session.lastActive || now - session.lastActive > 5000) { // 5s throttle
                      session.lastActive = now;
+                     chrome.alarms.create(`count_inactivity_${domain}`, { when: now + SESSION_INACTIVITY_TIMEOUT_MS });
                      sessions[domain] = session;
                      await chrome.storage.local.set({ activeSessions: sessions });
                  }
@@ -1168,6 +1170,41 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
                  } catch(e) {}
              }));
         }
+    } else if (alarm.name.startsWith('count_inactivity_')) {
+        const domain = alarm.name.slice('count_inactivity_'.length);
+
+        // Proactive backstop for the lazy inactivity check in checkAccessSerialized: fires even
+        // if the domain never gets another navigation event (e.g. browser closed for the day),
+        // which the lazy-only check can't handle since nothing else ever revisits it.
+        await enqueueSessionOp(async () => {
+            const now = Date.now();
+            const data = await chrome.storage.local.get(['activeSessions']);
+            const sessions = data.activeSessions || {};
+            const session = sessions[domain];
+
+            // Don't trust whatever was true when this alarm was scheduled — re-verify against
+            // current state, since activity (which reschedules this same alarm name forward)
+            // could have resumed between scheduling and firing.
+            const stillStale = session && session.type === 'count' && (
+                (session.cooldownEndTime && now > session.cooldownEndTime) ||
+                (now - (session.lastActive || session.startTime) > SESSION_INACTIVITY_TIMEOUT_MS)
+            );
+            if (!stillStale) return;
+
+            delete sessions[domain];
+            await chrome.storage.local.set({ activeSessions: sessions });
+            await syncSpanStateSerialized(now);
+
+            const tabs = await chrome.tabs.query({});
+            await Promise.all(tabs.map(async tab => {
+                try {
+                    if (getDomain(tab.url) === domain) {
+                        const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(tab.url)}&msg=Session%20Expired`);
+                        await redirectToPrompt(tab.id, promptUrl);
+                    }
+                } catch (e) {}
+            }));
+        });
     } else if (alarm.name.startsWith('schedlimit_')) {
         const limitId = alarm.name.slice('schedlimit_'.length);
         const now = Date.now();
@@ -1460,6 +1497,12 @@ async function startSessionInternal(url, type, value, origin, originTabId) {
              session.videosWatched = 1;
              session.watchedVideoIds.push(vid);
         }
+
+        // Proactive backstop for the lazy inactivity check in checkAccessSerialized: without
+        // this, an abandoned session (e.g. browser closed for the day, no navigation event ever
+        // fires again) just sits in storage forever showing stale progress, since nothing else
+        // ever revisits it. Rescheduled (via the same alarm name) every time lastActive moves.
+        chrome.alarms.create(`count_inactivity_${domain}`, { when: Date.now() + SESSION_INACTIVITY_TIMEOUT_MS });
     } else if (type === 'single_url') {
         session.targetUrl = value;
     }
