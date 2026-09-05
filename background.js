@@ -236,8 +236,11 @@ const SPAN_TOLERANCE_MS = 90000;
 
 // How long a count/single_url session can go untouched before it's treated as abandoned and
 // cleared. Mirrored across isSessionGrantingAccess and checkAccessSerialized — see comments
-// at each usage site for why they must stay in sync.
-const SESSION_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
+// at each usage site for why they must stay in sync. "Untouched" is backstopped by the
+// scheduledLimitLivenessPing heartbeat (see that message handler), which keeps a session alive
+// through long no-navigation stretches (e.g. one long video) — so this only needs to catch
+// genuinely abandoned sessions (tab/browser closed), not brief gaps between page loads.
+const SESSION_INACTIVITY_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
 // (Re)schedules the count_inactivity_<domain> proactive backstop alarm for `session` at the
 // EARLIER of its two lazy expiry conditions (mirrors checkAccessSerialized's own
@@ -251,6 +254,26 @@ function scheduleCountInactivityAlarm(domain, session, now = Date.now()) {
     let when = lastActive + SESSION_INACTIVITY_TIMEOUT_MS;
     if (session.cooldownEndTime) when = Math.min(when, session.cooldownEndTime);
     chrome.alarms.create(`count_inactivity_${domain}`, { when });
+}
+
+// Backstop for the SESSION_INACTIVITY_TIMEOUT_MS check: lastActive otherwise only moves on
+// navigation events, so a single long-lived page (one long video, no navigation) looks
+// "abandoned" even while genuinely being watched. Piggybacks on the same 30s
+// scheduledLimitLivenessPing heartbeat content.js already sends for span-tracking liveness, so
+// a page the user is actually on keeps its count/single_url session alive too.
+function refreshSessionLiveness(domain, now = Date.now()) {
+    if (!domain) return Promise.resolve();
+    return enqueueSessionOp(async () => {
+        const data = await chrome.storage.local.get('activeSessions');
+        const sessions = data.activeSessions || {};
+        const session = sessions[domain];
+        if (!session || (session.type !== 'count' && session.type !== 'single_url')) return;
+
+        session.lastActive = now;
+        sessions[domain] = session;
+        await chrome.storage.local.set({ activeSessions: sessions });
+        if (session.type === 'count') scheduleCountInactivityAlarm(domain, session, now);
+    });
 }
 
 // Returns true if `entry`'s day-of-week + time-of-day window is active at `now`.
@@ -1246,12 +1269,16 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
             await chrome.storage.local.set({ activeSessions: sessions });
             await syncSpanStateSerialized(now);
 
+            // Route each matching tab through the normal access check rather than assuming
+            // "Session Expired" — a domain-wide cooldown can already be active (e.g. this
+            // session was mid-cooldown, over its target count, when it went stale), and that
+            // check is what decides cooldown screen vs. fresh-start prompt.
             const tabs = await chrome.tabs.query({});
             await Promise.all(tabs.map(async tab => {
                 try {
-                    if (getDomain(tab.url) === domain) {
-                        const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(tab.url)}&msg=Session%20Expired`);
-                        await redirectToPrompt(tab.id, promptUrl);
+                    const tabDomain = getDomain(tab.url);
+                    if (tabDomain === domain) {
+                        await checkAccessSerialized(tab.id, tab.url, tabDomain);
                     }
                 } catch (e) {}
             }));
@@ -1414,7 +1441,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }).catch(err => sendResponse({ success: false, error: err.message }));
         return true;
     } else if (message.action === 'scheduledLimitLivenessPing') {
-        syncSpanState(Date.now())
+        const now = Date.now();
+        Promise.all([
+            syncSpanState(now),
+            refreshSessionLiveness(message.domain, now),
+        ])
             .then(() => sendResponse({}))
             .catch(() => sendResponse({}));
         return true;

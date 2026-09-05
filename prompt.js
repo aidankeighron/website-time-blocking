@@ -93,6 +93,19 @@ function appendTipBar() {
     document.body.appendChild(bar);
 }
 
+// True once this tab has committed to leaving the block screen. Several independent things can
+// decide "navigate to intendedUrl now" (a session picker's own submit response, the cooldown
+// countdown hitting zero, and — since watchStorageForDomain was added — a reactive storage
+// change noticing the same session becoming active from a completely different trigger). Without
+// this guard, two of those firing close together race two location.replace calls against each
+// other, aborting the first navigation (net::ERR_ABORTED) instead of just being a harmless no-op.
+let navigating = false;
+function navigateToSite() {
+    if (navigating) return;
+    navigating = true;
+    window.location.replace(intendedUrl);
+}
+
 // Main Logic: Check status immediately
 init();
 
@@ -171,7 +184,7 @@ async function showScheduledLimitBlockUI(limitId) {
             recheckBtn.disabled = true;
             recheckBtn.textContent = 'Checking…';
             await _sendMessage({ action: 'refreshHalfFullCache' });
-            window.location.replace(intendedUrl);
+            navigateToSite();
         });
     }
 }
@@ -210,8 +223,8 @@ async function init() {
         if (endTime > now) {
             const delay = data.inputDelay || 0;
             const extDuration = data.extensionDuration !== undefined ? data.extensionDuration : 30;
-            showCooldownUI(endTime, data.cooldowns[domain], delay, extDuration);
-            appendTipBar();
+            renderCooldownUI(endTime, data.cooldowns[domain], delay, extDuration);
+            watchStorageForDomain(domain);
             return;
         }
     }
@@ -229,25 +242,91 @@ async function init() {
 
     // Check if we already have an active session for this domain.
     // If we do, redirect immediately (handles 'back' button and any spurious re-redirects).
-    if (data.activeSessions && data.activeSessions[domain]) {
-        const session = data.activeSessions[domain];
-        const now = Date.now();
-        if (session.type === 'duration' && session.endTime > now) {
-            window.location.replace(intendedUrl);
-            return;
-        } else if (session.type === 'count' && (!session.cooldownEndTime || session.cooldownEndTime < now)) {
-            if ((session.videosWatched || 0) < session.targetCount) {
-                window.location.replace(intendedUrl);
-                return;
+    if (followActiveSessionIfGranting(data.activeSessions, domain)) return;
+
+    setupNormalUI(delay);
+    appendTipBar();
+    watchStorageForDomain(domain);
+}
+
+// True (and navigates) if activeSessions[domain] currently grants access — shared between the
+// initial render and the live storage-reconciliation path below.
+function followActiveSessionIfGranting(activeSessions, domain) {
+    const session = activeSessions && activeSessions[domain];
+    if (!session) return false;
+    const now = Date.now();
+    if (session.type === 'duration' && session.endTime > now) {
+        navigateToSite();
+        return true;
+    } else if (session.type === 'count' && (!session.cooldownEndTime || session.cooldownEndTime < now)) {
+        if ((session.videosWatched || 0) < session.targetCount) {
+            navigateToSite();
+            return true;
+        }
+    } else if (session.type === 'single_url') {
+        navigateToSite();
+        return true;
+    }
+    return false;
+}
+
+// endTime of the cooldown currently rendered on screen (if any), so reconcileWithStorage can
+// tell "cooldown changed, re-render" apart from "same cooldown, unrelated storage write."
+let renderedCooldownEndTime = null;
+
+function renderCooldownUI(endTime, cooldownInfo, delay, extDuration) {
+    renderedCooldownEndTime = endTime;
+    // Keep the address bar consistent with what background.js's own cooldown redirect would
+    // have produced (?cooldown=<minutesLeft>) — this tab is reconciling itself into that same
+    // state without an actual redirect, and the query param is otherwise the only visible record
+    // of why this tab is showing a cooldown (e.g. across a manual reload).
+    if (window.history.replaceState) {
+        const minutesLeft = Math.ceil((endTime - Date.now()) / 60000);
+        const u = new URL(window.location.href);
+        u.searchParams.set('cooldown', minutesLeft);
+        u.searchParams.delete('msg');
+        window.history.replaceState(null, '', u.toString());
+    }
+    showCooldownUI(endTime, cooldownInfo, delay, extDuration);
+    appendTipBar();
+}
+
+// This page renders once from a storage snapshot and otherwise only updates itself via its own
+// countdown timer (see showCooldownUI) — it has no way to notice a cooldown/session change made
+// by ANOTHER tab (e.g. a sibling tab starting a fresh session for the same domain, or a cooldown
+// being extended/finished elsewhere) until its own timer happens to expire or the user manually
+// reloads. Reacting to storage.onChanged closes that gap: a tab left sitting on this screen
+// stays in sync with whatever the rest of the extension just decided for this domain.
+function watchStorageForDomain(domain) {
+    if (!_isExtPage || !chrome.storage || !chrome.storage.onChanged) return;
+    chrome.storage.onChanged.addListener((changes, namespace) => {
+        if (namespace !== 'local') return;
+        if (!changes.cooldowns && !changes.activeSessions) return;
+        reconcileWithStorage(domain).catch(() => {});
+    });
+}
+
+async function reconcileWithStorage(domain) {
+    if (navigating) return; // already leaving the block screen via some other trigger
+    const data = await _storageGet(['cooldowns', 'activeSessions', 'inputDelay', 'extensionDuration']);
+    const now = Date.now();
+
+    if (data.cooldowns && data.cooldowns[domain]) {
+        const c = data.cooldowns[domain];
+        const endTime = typeof c === 'number' ? c : c.startTime + c.duration;
+        if (endTime > now) {
+            if (renderedCooldownEndTime !== endTime) {
+                const delay = data.inputDelay || 0;
+                const extDuration = data.extensionDuration !== undefined ? data.extensionDuration : 30;
+                renderCooldownUI(endTime, c, delay, extDuration);
             }
-        } else if (session.type === 'single_url') {
-            window.location.replace(intendedUrl);
             return;
         }
     }
 
-    setupNormalUI(delay);
-    appendTipBar();
+    // No active cooldown (anymore). If a session now grants access, follow it through
+    // immediately instead of leaving this tab stuck on a stale cooldown/picker screen.
+    followActiveSessionIfGranting(data.activeSessions, domain);
 }
 
 function isSpecificContent(url) {
@@ -327,7 +406,7 @@ function showCooldownUI(endTime, cooldownInfo, delay = 0, extensionDuration = 30
         const remainingMs = endTime - Date.now();
         if (remainingMs <= 0) {
             clearInterval(cdInterval);
-            window.location.replace(intendedUrl);
+            navigateToSite();
             return;
         }
         cdTimerEl.textContent = Math.ceil(remainingMs / 60000);
@@ -463,7 +542,7 @@ function startSession(type, value, origin) {
         origin: origin
     }).then(response => {
         if (response && response.success) {
-            window.location.replace(intendedUrl);
+            navigateToSite();
         } else {
              document.getElementById('error-msg').textContent = (response && response.error) || "Failed to start session.";
         }

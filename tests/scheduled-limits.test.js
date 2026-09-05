@@ -454,6 +454,32 @@ test('scheduledLimitLivenessPing message refreshes an open span\'s liveness', as
     expect(global.__store__.scheduledSpanStart).not.toBeNull(); // still open, not closed
 });
 
+// Regression test: SESSION_INACTIVITY_TIMEOUT_MS only used to move on navigation events, so a
+// single long-lived page with zero navigation (one long video, no clicks) looked "abandoned"
+// even while genuinely being watched. The same heartbeat that already keeps scheduled-limit
+// span liveness fresh (above) must also refresh the count session's own lastActive.
+test('scheduledLimitLivenessPing message also refreshes a count session\'s lastActive', async () => {
+    const staleLastActive = NOW - 60 * 60 * 1000; // 1 hour ago — well past the old 30m timeout
+    setStorage({
+        activeSessions: {
+            'youtube.com': {
+                type: 'count',
+                startTime: NOW - 2 * 60 * 60 * 1000,
+                targetCount: 5,
+                videosWatched: 2,
+                watchedVideoIds: ['aaa111', 'bbb222'],
+                lastActive: staleLastActive,
+            },
+        },
+    });
+    await fireMessage({ action: 'scheduledLimitLivenessPing', domain: 'youtube.com' });
+    const session = global.__store__.activeSessions['youtube.com'];
+    expect(session.lastActive).toBeGreaterThan(staleLastActive);
+
+    const calls = __mockFns__['alarms.create'].mock.calls.filter(([name]) => name === 'count_inactivity_youtube.com');
+    expect(calls.length).toBeGreaterThan(0); // backstop alarm pushed out to match the fresh lastActive
+});
+
 // ────────────────────────────────────────────────────────────────────────────
 // Alarm reconciliation / cleanup
 // ────────────────────────────────────────────────────────────────────────────

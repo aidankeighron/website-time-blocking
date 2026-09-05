@@ -283,7 +283,7 @@ test('YouTube: startSession with video URL counts that video immediately', async
 });
 
 // ── 13. Count session: 30-minute inactivity expires session ──────────────────
-test('YouTube: count session expires after 30 minutes of inactivity', async () => {
+test('YouTube: count session expires after 2 hours of inactivity', async () => {
     setStorage({
         activeSessions: {
             'youtube.com': {
@@ -292,8 +292,8 @@ test('YouTube: count session expires after 30 minutes of inactivity', async () =
                 targetCount: 5,
                 videosWatched: 2,
                 watchedVideoIds: ['aaa111', 'bbb222'],
-                lastActive: NOW - 30 * 60 * 1000 - 1, // just over 30 minutes ago
-                timeRangeLastCheck: NOW - 30 * 60 * 1000,
+                lastActive: NOW - 2 * 60 * 60 * 1000 - 1, // just over 2 hours ago
+                timeRangeLastCheck: NOW - 2 * 60 * 60 * 1000,
             },
         },
     });
@@ -317,7 +317,7 @@ test('YouTube: count_inactivity alarm expires an abandoned session even with no 
                 targetCount: 5,
                 videosWatched: 2,
                 watchedVideoIds: ['aaa111', 'bbb222'],
-                lastActive: NOW - 30 * 60 * 1000 - 1, // just over 30 minutes ago
+                lastActive: NOW - 2 * 60 * 60 * 1000 - 1, // just over 2 hours ago
             },
         },
     });
@@ -327,8 +327,45 @@ test('YouTube: count_inactivity alarm expires an abandoned session even with no 
 
     expect(global.__store__.activeSessions['youtube.com']).toBeUndefined();
     expectPromptRedirect(TAB);
+    // No cooldown was active, so the tab is routed to the fresh-start picker, not a cooldown
+    // screen — but via the real access check (checkAccessSerialized), not a hardcoded message.
     const url = __mockFns__['tabs.update'].mock.calls[0][1].url;
-    expect(url).toContain('Session%20Expired');
+    expect(url).not.toContain('cooldown=');
+    expect(url).not.toContain('Session%20Expired');
+});
+
+// ── 13b-2. count_inactivity alarm respects a cooldown already active for the domain ──────────
+// Regression test: the alarm used to always redirect straight to the fresh-start picker
+// (msg=Session Expired) regardless of what else was true for the domain — so a session that
+// went stale mid-cooldown (over its target count, waiting out countCooldown) sent the user to
+// "pick a new session" instead of the cooldown screen it should have shown, and let a fresh
+// session be started that bypassed the still-active cooldown entirely.
+test('YouTube: count_inactivity alarm shows the cooldown screen if the domain cooldown is still active', async () => {
+    const cooldownEnd = NOW + 10 * 60 * 1000;
+    setStorage({
+        activeSessions: {
+            'youtube.com': {
+                type: 'count',
+                startTime: NOW - 3 * 60 * 60 * 1000,
+                targetCount: 1,
+                videosWatched: 1,
+                watchedVideoIds: ['aaa111'],
+                lastActive: NOW - 2 * 60 * 60 * 1000 - 1, // stale by inactivity too
+                cooldownEndTime: cooldownEnd,
+            },
+        },
+        cooldowns: {
+            'youtube.com': { startTime: NOW - 20 * 60 * 1000, duration: 30 * 60 * 1000 },
+        },
+    });
+    __mockFns__['tabs.query'].mockResolvedValue([{ id: TAB, url: VIDEO_C }]);
+
+    await fireAlarm({ name: 'count_inactivity_youtube.com' });
+
+    expect(global.__store__.activeSessions['youtube.com']).toBeUndefined();
+    expectPromptRedirect(TAB);
+    const url = __mockFns__['tabs.update'].mock.calls[0][1].url;
+    expect(url).toContain('cooldown=');
 });
 
 // ── 13c. count_inactivity alarm is a no-op if activity resumed since it was scheduled ────────
@@ -370,7 +407,7 @@ test('YouTube: reaching the cap with a short countCooldown schedules the alarm a
                 lastActive: NOW - 60000,
             },
         },
-        countCooldown: 5, // minutes — much shorter than SESSION_INACTIVITY_TIMEOUT_MS (30m)
+        countCooldown: 5, // minutes — much shorter than SESSION_INACTIVITY_TIMEOUT_MS (2h)
     });
     await nav(VIDEO_A); // the 1st (== target) video — hits cap, starts a 5-minute cooldown
     expectNoRedirect(TAB); // this navigation itself is still allowed through

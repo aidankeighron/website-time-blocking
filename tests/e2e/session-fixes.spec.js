@@ -54,7 +54,11 @@ test('Cooldown countdown auto-releases once the real cooldown ends, without a ma
     await expect(page.locator('h1')).not.toContainText('Cooldown Active', { timeout: 6000 });
 });
 
-test('A stale fresh-picker tab cannot bypass a cooldown that started after it rendered', async ({ page, storage }) => {
+test('A stale fresh-picker tab switches itself to the cooldown screen once a cooldown starts elsewhere', async ({ page, storage }) => {
+    // Regression test: this tab used to have no way to learn about a cooldown that started
+    // elsewhere until it was reloaded or the user tried to submit the (stale) picker — it just
+    // sat there showing a form that no longer reflected reality. prompt.js now listens for
+    // storage.onChanged and reconciles itself live.
     await expectBlocked(page, VIDEO_A);
     // expectBlocked only confirms the URL landed on the block screen — prompt.js's own init()
     // (which reads storage asynchronously, slower via Firefox's test-bridge polling) may still
@@ -70,16 +74,13 @@ test('A stale fresh-picker tab cannot bypass a cooldown that started after it re
         cooldowns: { 'youtube.com': { startTime: now, duration: 30 * 60 * 1000, originalType: 'duration' } },
     });
 
-    // Submit the stale picker anyway.
-    await page.fill('#duration-input', '10');
-    await page.click('#confirm-btn');
-    await page.waitForTimeout(800);
+    // The tab must pick this up on its own — no submit, no reload — and switch to the real
+    // cooldown screen instead of being left stuck showing the stale picker.
+    await expect(page.locator('h1')).toContainText('Cooldown Active', { timeout: 5000 });
+    expect(page.url()).toContain('cooldown=30');
 
-    // Must NOT have created a session that overrides the cooldown for the whole domain.
+    // And since the picker was never submitted, no session was created that could have
+    // overridden the cooldown for the whole domain.
     const data = await storage.get({ activeSessions: {} });
     expect(data.activeSessions['youtube.com']).toBeUndefined();
-
-    // The tab should now reflect the real cooldown screen instead of being left stuck.
-    expect(page.url()).toContain('cooldown=30');
-    await expect(page.locator('h1')).toContainText('Cooldown Active');
 });

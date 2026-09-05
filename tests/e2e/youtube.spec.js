@@ -223,20 +223,20 @@ test('YouTube: (N+1)th video is blocked and shows Cooldown Active', async ({ pag
     await expect(page.locator('h1')).toContainText('Cooldown Active');
 });
 
-// ── 9. 30-minute inactivity expiry ────────────────────────────────────────────
+// ── 9. 2-hour inactivity expiry ────────────────────────────────────────────
 
-test('YouTube: count session expires after 30 minutes of inactivity', async ({ page, storage }) => {
+test('YouTube: count session expires after 2 hours of inactivity', async ({ page, storage }) => {
     const now = Date.now();
     await storage.set({
         activeSessions: {
             'youtube.com': {
                 type: 'count',
-                startTime: now - 3 * 60 * 60 * 1000,
+                startTime: now - 5 * 60 * 60 * 1000,
                 targetCount: 5,
                 videosWatched: 2,
                 watchedVideoIds: ['aaa111', 'bbb222'],
-                lastActive: now - 30 * 60 * 1000 - 1, // just over 30 minutes ago
-                timeRangeLastCheck: now - 30 * 60 * 1000,
+                lastActive: now - 2 * 60 * 60 * 1000 - 1, // just over 2 hours ago
+                timeRangeLastCheck: now - 2 * 60 * 60 * 1000,
             },
         },
     });
