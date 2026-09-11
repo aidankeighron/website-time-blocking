@@ -4,8 +4,15 @@
 
     function getDomain(url) {
         try {
-            const hostname = new URL(url).hostname;
-            return hostname.replace(/^(www\.|m\.|mobile\.)/, '');
+            const hostname = new URL(url).hostname.replace(/^(www\.|m\.|mobile\.)/, '');
+            // Must match background.js/prompt.js's own getDomain exactly, including the youtu.be
+            // alias. Without this, a youtu.be video page resolves to domain "youtu.be" here while
+            // the session lives under activeSessions["youtube.com"] — this script never finds it,
+            // so the overlay never renders AND (more importantly) the 30s liveness heartbeat that
+            // keeps a long-watched video's session from looking "abandoned" (see
+            // scheduledLimitLivenessPing in background.js) never starts for that tab at all.
+            if (hostname === 'youtu.be') return 'youtube.com';
+            return hostname;
         } catch (e) {
             return null;
         }
