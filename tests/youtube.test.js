@@ -308,7 +308,14 @@ test('YouTube: count session expires after 2 hours of inactivity', async () => {
 // session still showed 5/9" — the lazy check only ever ran as a side effect of a navigation
 // event, so an abandoned session with no navigation event at all (browser closed the whole time)
 // never got cleared. count_inactivity_<domain> is the proactive backstop for exactly that case.
-test('YouTube: count_inactivity alarm expires an abandoned session even with no navigation at all', async () => {
+// Regression test: this alarm used to forcibly navigate every open tab on the domain away to
+// prompt.html the moment it cleaned up a stale session — even a tab that was just sitting on an
+// already-whitelisted video, doing nothing wrong. That yanked users off content they were still
+// allowed to watch purely because a background timer fired, with zero user action involved. The
+// alarm's job is to keep STORAGE accurate (so a genuinely abandoned session doesn't show as
+// still active a day later); enforcement on already-open tabs stays lazy, via that tab's own
+// next real navigation — exactly like every other access decision in this file.
+test('YouTube: count_inactivity alarm expires an abandoned session in storage but does not touch any open tab', async () => {
     setStorage({
         activeSessions: {
             'youtube.com': {
@@ -325,22 +332,18 @@ test('YouTube: count_inactivity alarm expires an abandoned session even with no 
 
     await fireAlarm({ name: 'count_inactivity_youtube.com' });
 
+    // Storage is cleaned up...
     expect(global.__store__.activeSessions['youtube.com']).toBeUndefined();
-    expectPromptRedirect(TAB);
-    // No cooldown was active, so the tab is routed to the fresh-start picker, not a cooldown
-    // screen — but via the real access check (checkAccessSerialized), not a hardcoded message.
-    const url = __mockFns__['tabs.update'].mock.calls[0][1].url;
-    expect(url).not.toContain('cooldown=');
-    expect(url).not.toContain('Session%20Expired');
+    // ...but the open tab itself was never touched.
+    expectNoRedirect(TAB);
 });
 
-// ── 13b-2. count_inactivity alarm respects a cooldown already active for the domain ──────────
-// Regression test: the alarm used to always redirect straight to the fresh-start picker
-// (msg=Session Expired) regardless of what else was true for the domain — so a session that
-// went stale mid-cooldown (over its target count, waiting out countCooldown) sent the user to
-// "pick a new session" instead of the cooldown screen it should have shown, and let a fresh
-// session be started that bypassed the still-active cooldown entirely.
-test('YouTube: count_inactivity alarm shows the cooldown screen if the domain cooldown is still active', async () => {
+// ── 13b-2. count_inactivity alarm leaves an already-active domain cooldown untouched ─────────
+// Regression test companion: a session that goes stale mid-cooldown (over its target count,
+// waiting out countCooldown) must have its OWN session record cleaned up without disturbing the
+// separate cooldowns[domain] record — that's what a subsequent real navigation on this (or any
+// other) tab needs to correctly show the cooldown screen instead of the fresh picker.
+test('YouTube: count_inactivity alarm leaves an active domain cooldown intact for the next real navigation', async () => {
     const cooldownEnd = NOW + 10 * 60 * 1000;
     setStorage({
         activeSessions: {
@@ -362,7 +365,14 @@ test('YouTube: count_inactivity alarm shows the cooldown screen if the domain co
 
     await fireAlarm({ name: 'count_inactivity_youtube.com' });
 
+    // The session itself is gone, but nothing was navigated...
     expect(global.__store__.activeSessions['youtube.com']).toBeUndefined();
+    expectNoRedirect(TAB);
+    // ...and the domain-wide cooldown record is untouched, still active.
+    expect(global.__store__.cooldowns['youtube.com']).toBeDefined();
+
+    // A genuinely new navigation on that tab now correctly lands on the real cooldown screen.
+    await nav(VIDEO_C);
     expectPromptRedirect(TAB);
     const url = __mockFns__['tabs.update'].mock.calls[0][1].url;
     expect(url).toContain('cooldown=');

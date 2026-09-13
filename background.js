@@ -1249,7 +1249,14 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
         // Proactive backstop for the lazy inactivity check in checkAccessSerialized: fires even
         // if the domain never gets another navigation event (e.g. browser closed for the day),
-        // which the lazy-only check can't handle since nothing else ever revisits it.
+        // which the lazy-only check can't handle since nothing else ever revisits it. This ONLY
+        // cleans up storage — it must NOT forcibly navigate any tab that's currently open. A tab
+        // sitting on an already-whitelisted video is allowed to keep watching it uninterrupted
+        // for as long as it stays open (see isSessionGrantingAccess's count branch); blocking is
+        // enforced lazily, only on that tab's own next real navigation (reload, a new video, a
+        // new tab), exactly like every other access decision in this file. Forcibly redirecting
+        // here — even to the "correct" screen — would yank a user off content they were already
+        // allowed to watch, purely because a background timer fired with no user action at all.
         await enqueueSessionOp(async () => {
             const now = Date.now();
             const data = await chrome.storage.local.get(['activeSessions']);
@@ -1268,20 +1275,6 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
             delete sessions[domain];
             await chrome.storage.local.set({ activeSessions: sessions });
             await syncSpanStateSerialized(now);
-
-            // Route each matching tab through the normal access check rather than assuming
-            // "Session Expired" — a domain-wide cooldown can already be active (e.g. this
-            // session was mid-cooldown, over its target count, when it went stale), and that
-            // check is what decides cooldown screen vs. fresh-start prompt.
-            const tabs = await chrome.tabs.query({});
-            await Promise.all(tabs.map(async tab => {
-                try {
-                    const tabDomain = getDomain(tab.url);
-                    if (tabDomain === domain) {
-                        await checkAccessSerialized(tab.id, tab.url, tabDomain);
-                    }
-                } catch (e) {}
-            }));
         });
     } else if (alarm.name.startsWith('schedlimit_')) {
         const limitId = alarm.name.slice('schedlimit_'.length);
