@@ -7,22 +7,33 @@ const DEFAULT_TARGETS = ['instagram.com', 'reddit.com', 'youtube.com'];
 const processingTabs = new Set(); // Tracks tabs currently being processed (short-lived lock)
 const pendingPromptTabs = new Set(); // Tracks tabs redirected to prompt.html, waiting to commit
 const tabsCurrentlyAtPrompt = new Set(); // Tracks tabs that have committed to prompt.html
-// Which domain each processingTabs entry's debounce is actually FOR. The 1-second debounce
-// below exists to swallow duplicate events for the SAME in-flight navigation (a site can fire
-// many onUpdated ticks per navigation); it must not also swallow a genuinely different,
-// subsequent navigation on the same tab that happens to land inside that window. Concretely:
-// opening a new tab and typing into the omnibox routes through Chrome's own
-// chrome://newtab/ -> chrome-untrusted://new-tab-page/... -> google.com/search/warmup.html
-// chain before ever reaching the real destination — all as ordinary onUpdated events on ONE
-// tab, not a tab replacement. None of those are target sites, so nothing blocks them, but the
-// debounce they leave behind used to also blindly swallow the real destination's own event if
-// it arrived (as it usually does once caches are warm) within that same second — a live-
-// confirmed miss with zero blocking UI. Comparing against the domain actually being debounced
-// lets a different domain through immediately instead of waiting out someone else's window.
-const lastCheckedDomain = new Map();
+// Which nav key each processingTabs entry's debounce is actually FOR (see getNavKey above).
+// The 1-second debounce below exists to swallow duplicate events for the SAME in-flight
+// navigation (a site can fire many onUpdated ticks per navigation, or a same-site
+// http->https->www redirect chain); it must not also swallow a genuinely different, subsequent
+// navigation on the same tab that happens to land inside that window. Two concrete cases this
+// must get right:
+// - Opening a new tab and typing into the omnibox routes through Chrome's own
+//   chrome://newtab/ -> chrome-untrusted://new-tab-page/... -> google.com/search/warmup.html
+//   chain before ever reaching the real destination — all as ordinary onUpdated events on ONE
+//   tab, not a tab replacement. None of those are target sites, so nothing blocks them, but the
+//   debounce they leave behind used to also blindly swallow the real destination's own event if
+//   it arrived (as it usually does once caches are warm) within that same second — a live-
+//   confirmed miss with zero blocking UI.
+// - On a target site's OWN in-page SPA navigation (e.g. clicking the YouTube logo to leave a
+//   video for the homepage), YouTube's watch page fires plenty of its own pushState/replaceState
+//   calls for in-page UI state (chapters, "Up Next" autoplay prep, etc.) — all still on
+//   youtube.com. Keying this purely on domain meant a stray one of those, landing moments before
+//   the user's real click, could win the debounce and get embedded as the blocked URL, so
+//   completing the blocking flow sent the user back to the stale video instead of forward to
+//   where they'd actually navigated. Keying on domain+path+query (not domain alone) still
+//   collapses the first case above (different domains) and same-site protocol/www redirect
+//   chains (same resolved path), while no longer conflating two genuinely different destinations
+//   that happen to share a domain.
+const lastCheckedNavKey = new Map();
 // Tabs whose real destination chrome.tabs.onReplaced is still waiting to discover (tab.url was
 // empty or a transient browser placeholder at swap time — see isTransientBrowserUrl below).
-// Deliberately separate from processingTabs/lastCheckedDomain: while a tab is in here, the
+// Deliberately separate from processingTabs/lastCheckedNavKey: while a tab is in here, the
 // top-level onUpdated/handleWebNavigationEvent listeners must defer to the retry's own scoped
 // listener UNCONDITIONALLY, regardless of domain — domain-based debouncing doesn't apply
 // because there IS no domain yet; that's the whole thing being resolved.
@@ -667,6 +678,20 @@ function getDomain(url) {
     }
 }
 
+// Debounce key for the navigation-event listeners below: hostname (same protocol/www./m./
+// mobile. stripping as getDomain, so a same-site http->https->www redirect chain still
+// collapses to one key) + pathname + search. Deliberately NOT just the domain — see
+// lastCheckedNavKey's declaration comment for why domain alone is too coarse.
+function getNavKey(url) {
+    try {
+        const u = new URL(url);
+        const hostname = u.hostname.replace(/^(www\.|m\.|mobile\.)/, '');
+        return hostname + u.pathname + u.search;
+    } catch (e) {
+        return url;
+    }
+}
+
 // Redirect a tab to the prompt page and mark it as pending so duplicate events are ignored.
 // In Firefox E2E tests, background.js can't redirect to moz-extension:// because Playwright's
 // Juggler protocol drops the page when it encounters that scheme. If the storage key
@@ -816,22 +841,26 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         return;
     }
 
-    // A rapid duplicate of an in-flight check for this SAME domain. Sites fire many onUpdated
-    // events per navigation (loading/complete, title, favicon, SPA route changes — this is
-    // especially aggressive on Firefox and on the exact sites this extension targets), and
-    // without this lock each one independently re-issues its own tabs.update() redirect,
+    // A rapid duplicate of an in-flight check for this SAME navigation. Sites fire many
+    // onUpdated events per navigation (loading/complete, title, favicon, SPA route changes —
+    // this is especially aggressive on Firefox and on the exact sites this extension targets),
+    // and without this lock each one independently re-issues its own tabs.update() redirect,
     // which itself triggers more onUpdated events — a flicker loop that can take minutes to
-    // settle before the block finally sticks. Gated on domain (not just tabId) so a genuinely
-    // different, subsequent navigation on the same tab — e.g. Chrome's own
-    // chrome://newtab/ -> search-warmup -> destination chain — isn't swallowed just because it
-    // lands inside this domain's debounce window (see lastCheckedDomain above).
-    if (processingTabs.has(tabId) && lastCheckedDomain.get(tabId) === domain) {
-        if (WTB_DEBUG) console.log('[WTB DEBUG] onUpdated: skipped, processingTabs locked for same domain', { tabId, currentUrl, domain });
+    // settle before the block finally sticks. Gated on a normalized nav key, not just tabId or
+    // domain, so a genuinely different, subsequent navigation on the same tab isn't swallowed
+    // just because it lands inside this window — whether that's a different domain (e.g.
+    // Chrome's own chrome://newtab/ -> search-warmup -> destination chain) or the SAME domain
+    // but a different destination (e.g. a stray SPA event on a YouTube video page followed
+    // moments later by the user actually navigating to the homepage — see lastCheckedNavKey
+    // above).
+    const navKey = getNavKey(currentUrl);
+    if (processingTabs.has(tabId) && lastCheckedNavKey.get(tabId) === navKey) {
+        if (WTB_DEBUG) console.log('[WTB DEBUG] onUpdated: skipped, processingTabs locked for same nav key', { tabId, currentUrl, navKey });
         return;
     }
 
     processingTabs.add(tabId);
-    lastCheckedDomain.set(tabId, domain);
+    lastCheckedNavKey.set(tabId, navKey);
     try {
         if (await isTargetSite(currentUrl)) {
             await checkAccess(tabId, currentUrl, domain);
@@ -874,14 +903,15 @@ async function handleWebNavigationEvent({ tabId, url, frameId }) {
     }
 
     // See the matching comment in onUpdated above: only swallow a duplicate for the SAME
-    // domain, not a genuinely different navigation landing inside the debounce window.
-    if (processingTabs.has(tabId) && lastCheckedDomain.get(tabId) === domain) {
-        if (WTB_DEBUG) console.log('[WTB DEBUG] handleWebNavigationEvent: skipped, processingTabs locked for same domain', { tabId, url, domain });
+    // nav key, not a genuinely different navigation landing inside the debounce window.
+    const navKey = getNavKey(url);
+    if (processingTabs.has(tabId) && lastCheckedNavKey.get(tabId) === navKey) {
+        if (WTB_DEBUG) console.log('[WTB DEBUG] handleWebNavigationEvent: skipped, processingTabs locked for same nav key', { tabId, url, navKey });
         return;
     }
 
     processingTabs.add(tabId);
-    lastCheckedDomain.set(tabId, domain);
+    lastCheckedNavKey.set(tabId, navKey);
     try {
         if (await isTargetSite(url)) {
             await checkAccess(tabId, url, domain);
@@ -1318,7 +1348,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     pendingPromptTabs.delete(tabId);
     tabsCurrentlyAtPrompt.delete(tabId);
     processingTabs.delete(tabId);
-    lastCheckedDomain.delete(tabId);
+    lastCheckedNavKey.delete(tabId);
     pendingReplacementResolution.delete(tabId);
 });
 
@@ -1359,7 +1389,7 @@ chrome.tabs.onReplaced.addListener(async (addedTabId, removedTabId) => {
     pendingPromptTabs.delete(removedTabId);
     tabsCurrentlyAtPrompt.delete(removedTabId);
     processingTabs.delete(removedTabId);
-    lastCheckedDomain.delete(removedTabId);
+    lastCheckedNavKey.delete(removedTabId);
     pendingReplacementResolution.delete(removedTabId);
 
     if (pendingReplacementResolution.has(addedTabId)) {

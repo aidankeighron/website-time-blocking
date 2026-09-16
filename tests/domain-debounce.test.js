@@ -9,12 +9,21 @@
 // does once caches are warm. A real repro showed this: the very first navigation after an
 // extension reload was slow enough to slip past the window and got blocked correctly; every
 // navigation after that was fast enough to land inside it and was silently never checked at
-// all. Fixed by gating the debounce on the domain actually being processed (lastCheckedDomain),
-// not just the tab id.
+// all. Fixed by gating the debounce on the domain actually being processed (lastCheckedDomain,
+// later narrowed to lastCheckedNavKey — see below), not just the tab id.
+//
+// A second, related bug (same lock, opposite direction) is covered further down: domain alone
+// is too coarse WITHIN a single target site. YouTube's watch page fires its own pushState/
+// replaceState calls for in-page UI state, all still on youtube.com — if one of those raced a
+// user's real click to the homepage, the domain-only lock swallowed the homepage's own event,
+// letting the stray video-page check "win" and get embedded as the blocked URL. Completing the
+// blocking flow then sent the user back to the stale video instead of forward to the homepage
+// they'd actually clicked toward. Fixed by keying the debounce on domain+path+query
+// (lastCheckedNavKey / getNavKey) instead of domain alone.
 
 const {
     loadBackground, fireUpdated, setStorage,
-    expectPromptRedirect, NOW,
+    expectPromptRedirect, lastRedirectUrl, NOW,
 } = require('./helpers');
 
 const TAB = 500;
@@ -58,4 +67,32 @@ test('a genuine duplicate event for the SAME domain is still debounced (checkAcc
     expect(checkAccessCalls.length).toBe(1);
 
     getSpy.mockRestore();
+});
+
+test('a different URL on the SAME domain racing an in-flight check is not swallowed (video -> homepage)', async () => {
+    // Reproduces the reported bug: no active session/cooldown (fully expired), so a stray
+    // SPA event on the video page itself (e.g. YouTube's own in-page pushState/replaceState
+    // churn) would resolve to "no session/no cooldown -> fresh prompt" for the VIDEO url. If the
+    // user's real click to the homepage lands moments later, while that first check is still
+    // in flight (i.e. before its 1-second processingTabs lock naturally clears), the domain-only
+    // debounce used to swallow the homepage's own event — leaving the stale video URL embedded
+    // as the blocked destination instead.
+    const VIDEO_URL = 'https://www.youtube.com/watch?v=abc123';
+    const HOME_URL = 'https://www.youtube.com/';
+
+    const handlers = global.__listeners__.onCommitted;
+    // Fire both events back-to-back WITHOUT awaiting the first — mirrors the real race, where
+    // the stray video-page event is still mid-check (its synchronous debounce-lock prefix has
+    // run, but its awaited checkAccessSerialized hasn't resolved yet) when the homepage click's
+    // event arrives.
+    const p1 = Promise.all(handlers.map(fn => fn({ tabId: TAB, url: VIDEO_URL, frameId: 0 })));
+    const p2 = Promise.all(handlers.map(fn => fn({ tabId: TAB, url: HOME_URL, frameId: 0 })));
+    await Promise.all([p1, p2]);
+
+    // The tab must end up pointed at the REAL destination (the homepage) — not stuck on
+    // whatever stale URL the first, in-flight check happened to be for.
+    const redirectedUrl = lastRedirectUrl();
+    expect(redirectedUrl).toBeTruthy();
+    const intendedUrl = new URL(redirectedUrl).searchParams.get('url');
+    expect(intendedUrl).toBe(HOME_URL);
 });
