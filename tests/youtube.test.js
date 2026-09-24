@@ -303,19 +303,89 @@ test('YouTube: count session expires after 2 hours of inactivity', async () => {
     expect(url).toContain('Session%20Expired');
 });
 
-// ── 13b. Count session: inactivity alarm expires session with zero navigation ────────────────
-// Regression test: reported bug was "gone for a whole day, tab closed, came back to a new tab —
-// session still showed 5/9" — the lazy check only ever ran as a side effect of a navigation
-// event, so an abandoned session with no navigation event at all (browser closed the whole time)
-// never got cleared. count_inactivity_<domain> is the proactive backstop for exactly that case.
-// Regression test: this alarm used to forcibly navigate every open tab on the domain away to
-// prompt.html the moment it cleaned up a stale session — even a tab that was just sitting on an
-// already-whitelisted video, doing nothing wrong. That yanked users off content they were still
-// allowed to watch purely because a background timer fired, with zero user action involved. The
-// alarm's job is to keep STORAGE accurate (so a genuinely abandoned session doesn't show as
-// still active a day later); enforcement on already-open tabs stays lazy, via that tab's own
-// next real navigation — exactly like every other access decision in this file.
-test('YouTube: count_inactivity alarm expires an abandoned session in storage but does not touch any open tab', async () => {
+// ── 13b. Count session: cooldown ending does not retroactively block already-watched videos ──
+// Regression test: reported bug was "started a 5-video count session, watched all 5, the
+// countCooldown ran out — and every one of those 5 already-watched videos then got the block
+// screen too, not just genuinely new ones." That happened because both the lazy expiry check in
+// checkAccessSerialized AND the count_inactivity_ alarm unconditionally deleted the whole
+// session (watchedVideoIds included) the moment the cooldown/inactivity clock ran out, so there
+// was nothing left to tell "already-granted video" apart from "brand new video" by the time the
+// next navigation event fired. A video already on the whitelist (or a non-video page) must stay
+// reachable once the cooldown is over; only a genuinely new video should force a fresh session.
+test('YouTube: revisiting an already-watched video after cooldown ends is still allowed', async () => {
+    setStorage({
+        activeSessions: {
+            'youtube.com': {
+                type: 'count',
+                startTime: NOW - 60 * 60 * 1000,
+                targetCount: 5,
+                videosWatched: 5,
+                watchedVideoIds: ['v1', 'v2', 'v3', 'v4', 'v5'],
+                lastActive: NOW - 31 * 60 * 1000,
+                cooldownEndTime: NOW - 60 * 1000, // cooldown ended a minute ago
+            },
+        },
+        countCooldown: 30,
+    });
+
+    await nav('https://www.youtube.com/watch?v=v3'); // one of the 5 already-watched videos
+    expectNoRedirect(TAB);
+    // The session survives — its whitelist is still there for the next revisit too.
+    expect(global.__store__.activeSessions['youtube.com'].watchedVideoIds).toContain('v3');
+});
+
+test('YouTube: the homepage stays reachable after cooldown ends, without wiping the session', async () => {
+    setStorage({
+        activeSessions: {
+            'youtube.com': {
+                type: 'count',
+                startTime: NOW - 60 * 60 * 1000,
+                targetCount: 5,
+                videosWatched: 5,
+                watchedVideoIds: ['v1', 'v2', 'v3', 'v4', 'v5'],
+                lastActive: NOW - 31 * 60 * 1000,
+                cooldownEndTime: NOW - 60 * 1000,
+            },
+        },
+        countCooldown: 30,
+    });
+
+    await nav(YT_HOME);
+    expectNoRedirect(TAB);
+    expect(global.__store__.activeSessions['youtube.com']).toBeDefined();
+});
+
+test('YouTube: a genuinely NEW video after cooldown ends still requires a fresh session', async () => {
+    setStorage({
+        activeSessions: {
+            'youtube.com': {
+                type: 'count',
+                startTime: NOW - 60 * 60 * 1000,
+                targetCount: 5,
+                videosWatched: 5,
+                watchedVideoIds: ['v1', 'v2', 'v3', 'v4', 'v5'],
+                lastActive: NOW - 31 * 60 * 1000,
+                cooldownEndTime: NOW - 60 * 1000,
+            },
+        },
+        countCooldown: 30,
+    });
+
+    await nav(VIDEO_C); // not on the whitelist
+    expectPromptRedirect(TAB);
+    const url = __mockFns__['tabs.update'].mock.calls[0][1].url;
+    expect(url).toContain('Session%20Expired');
+    expect(global.__store__.activeSessions['youtube.com']).toBeUndefined();
+});
+
+// ── 13b-2. count_inactivity alarm no longer deletes the session, only closes the tracking span ──
+// The alarm has no URL to check against, so it can no longer tell "already-granted video" apart
+// from "new video" the way checkAccessSerialized's lazy check can — deleting the session here
+// would blow away watchedVideoIds and reintroduce the retroactive-block bug above via a route
+// that doesn't even require a navigation. Finalizing an expired count session is left entirely to
+// the lazy, per-navigation check; this alarm now only keeps the scheduled-limits span accounting
+// accurate and never touches any open tab.
+test('YouTube: count_inactivity alarm does not delete the session or touch any open tab', async () => {
     setStorage({
         activeSessions: {
             'youtube.com': {
@@ -332,19 +402,21 @@ test('YouTube: count_inactivity alarm expires an abandoned session in storage bu
 
     await fireAlarm({ name: 'count_inactivity_youtube.com' });
 
-    // Storage is cleaned up...
-    expect(global.__store__.activeSessions['youtube.com']).toBeUndefined();
-    // ...but the open tab itself was never touched.
+    // The session (and its whitelist) is left in storage...
+    expect(global.__store__.activeSessions['youtube.com']).toBeDefined();
+    expect(global.__store__.activeSessions['youtube.com'].watchedVideoIds).toEqual(['aaa111', 'bbb222']);
+    // ...and the open tab itself was never touched.
     expectNoRedirect(TAB);
 });
 
-// ── 13b-2. count_inactivity alarm leaves an already-active domain cooldown untouched ─────────
-// Regression test companion: a session that goes stale mid-cooldown (over its target count,
-// waiting out countCooldown) must have its OWN session record cleaned up without disturbing the
-// separate cooldowns[domain] record — that's what a subsequent real navigation on this (or any
-// other) tab needs to correctly show the cooldown screen instead of the fresh picker.
-test('YouTube: count_inactivity alarm leaves an active domain cooldown intact for the next real navigation', async () => {
-    const cooldownEnd = NOW + 10 * 60 * 1000;
+// ── 13b-3. A long, still-pending cooldown stays authoritative even past 2 hours of inactivity ──
+// Regression test companion: a session with a cooldown far longer than the usual 2-hour
+// inactivity window (e.g. a deliberately long countCooldown) must not have that inactivity check
+// short-circuit it into an early "Session Expired" reset — that would let a genuinely new video
+// jump the remainder of a cooldown the user hasn't actually served yet. A known video stays
+// allowed either way.
+test('YouTube: a still-pending cooldown is not bypassed by 2+ hours of inactivity', async () => {
+    const cooldownEnd = NOW + 10 * 60 * 1000; // 10 minutes still left on the cooldown
     setStorage({
         activeSessions: {
             'youtube.com': {
@@ -353,29 +425,24 @@ test('YouTube: count_inactivity alarm leaves an active domain cooldown intact fo
                 targetCount: 1,
                 videosWatched: 1,
                 watchedVideoIds: ['aaa111'],
-                lastActive: NOW - 2 * 60 * 60 * 1000 - 1, // stale by inactivity too
+                lastActive: NOW - 2 * 60 * 60 * 1000 - 1, // stale by the inactivity window too
                 cooldownEndTime: cooldownEnd,
             },
         },
-        cooldowns: {
-            'youtube.com': { startTime: NOW - 20 * 60 * 1000, duration: 30 * 60 * 1000 },
-        },
+        countCooldown: 30,
     });
-    __mockFns__['tabs.query'].mockResolvedValue([{ id: TAB, url: VIDEO_C }]);
 
-    await fireAlarm({ name: 'count_inactivity_youtube.com' });
-
-    // The session itself is gone, but nothing was navigated...
-    expect(global.__store__.activeSessions['youtube.com']).toBeUndefined();
+    // A known video is still fine.
+    await nav('https://www.youtube.com/watch?v=aaa111');
     expectNoRedirect(TAB);
-    // ...and the domain-wide cooldown record is untouched, still active.
-    expect(global.__store__.cooldowns['youtube.com']).toBeDefined();
 
-    // A genuinely new navigation on that tab now correctly lands on the real cooldown screen.
+    // A genuinely new video is blocked — the remaining ~10 minutes of cooldown still apply,
+    // instead of being wiped by the unrelated 2-hour inactivity timeout.
     await nav(VIDEO_C);
     expectPromptRedirect(TAB);
     const url = __mockFns__['tabs.update'].mock.calls[0][1].url;
-    expect(url).toContain('cooldown=');
+    expect(url).toContain('Limit%20Reached');
+    expect(global.__store__.activeSessions['youtube.com'].cooldownEndTime).toBe(cooldownEnd);
 });
 
 // ── 13c. count_inactivity alarm is a no-op if activity resumed since it was scheduled ────────

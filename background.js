@@ -1011,8 +1011,27 @@ async function checkAccessSerialized(tabId, url, domain) {
             return false; // Allow access
 
         } else if (session.type === 'count') {
+            // YouTube specific: Check video ID
+            const videoId = getYouTubeVideoId(url);
+
+            // Initialize array if missing (migration)
+            if (!session.watchedVideoIds) session.watchedVideoIds = [];
+            if (session.lastVideoId && !session.watchedVideoIds.includes(session.lastVideoId)) {
+                 session.watchedVideoIds.push(session.lastVideoId); // migrates old single ID
+            }
+
+            // A video already on the whitelist (or a non-video page, e.g. the homepage) stays
+            // reachable even once this session's clock has fully run out below — only a
+            // genuinely NEW video needs to force the user back through the block screen. Without
+            // this, every already-granted video retroactively gets blocked the moment the
+            // cooldown ends (or the inactivity window lapses), even though nothing changed about
+            // that specific video's access.
+            const isKnownContent = !videoId || session.watchedVideoIds.includes(videoId);
+
             // Check Expiry first
             if (session.cooldownEndTime && now > session.cooldownEndTime) {
+                 if (isKnownContent) return false; // Allow: already-granted content, cooldown already fully served
+
                  delete sessions[domain];
                  await chrome.storage.local.set({ activeSessions: sessions });
                  await syncSpanStateSerialized(now);
@@ -1022,8 +1041,15 @@ async function checkAccessSerialized(tabId, url, domain) {
                  return true;
             }
 
-            // Check for inactivity (similar to unlimited)
-            if (now - (session.lastActive || session.startTime) > SESSION_INACTIVITY_TIMEOUT_MS) {
+            // Check for inactivity (similar to unlimited) — but only when there's no cooldown
+            // clock already governing this session. A session with a still-pending
+            // cooldownEndTime (even a long one) must have ITS end time stay authoritative for
+            // whether a genuinely new video is allowed, not get short-circuited into an early
+            // "Session Expired" reset just because the user happened to be away longer than this
+            // shorter, unrelated timeout — that would let a new video jump the remaining cooldown.
+            if (!session.cooldownEndTime && now - (session.lastActive || session.startTime) > SESSION_INACTIVITY_TIMEOUT_MS) {
+                 if (isKnownContent) return false; // Allow: same already-granted content, just a stale timestamp
+
                  // Session Expired due to inactivity
                  delete sessions[domain];
                  await chrome.storage.local.set({ activeSessions: sessions });
@@ -1032,15 +1058,6 @@ async function checkAccessSerialized(tabId, url, domain) {
                  const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Session%20Expired`);
                  await redirectToPrompt(tabId, promptUrl);
                  return true;
-            }
-
-            // YouTube specific: Check video ID
-            const videoId = getYouTubeVideoId(url);
-
-            // Initialize array if missing (migration)
-            if (!session.watchedVideoIds) session.watchedVideoIds = [];
-            if (session.lastVideoId && !session.watchedVideoIds.includes(session.lastVideoId)) {
-                 session.watchedVideoIds.push(session.lastVideoId); // migrates old single ID
             }
 
             if (videoId && !session.watchedVideoIds.includes(videoId)) {
@@ -1277,35 +1294,22 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     } else if (alarm.name.startsWith('count_inactivity_')) {
         const domain = alarm.name.slice('count_inactivity_'.length);
 
-        // Proactive backstop for the lazy inactivity check in checkAccessSerialized: fires even
-        // if the domain never gets another navigation event (e.g. browser closed for the day),
-        // which the lazy-only check can't handle since nothing else ever revisits it. This ONLY
-        // cleans up storage — it must NOT forcibly navigate any tab that's currently open. A tab
-        // sitting on an already-whitelisted video is allowed to keep watching it uninterrupted
-        // for as long as it stays open (see isSessionGrantingAccess's count branch); blocking is
-        // enforced lazily, only on that tab's own next real navigation (reload, a new video, a
-        // new tab), exactly like every other access decision in this file. Forcibly redirecting
-        // here — even to the "correct" screen — would yank a user off content they were already
-        // allowed to watch, purely because a background timer fired with no user action at all.
-        await enqueueSessionOp(async () => {
-            const now = Date.now();
-            const data = await chrome.storage.local.get(['activeSessions']);
-            const sessions = data.activeSessions || {};
-            const session = sessions[domain];
-
-            // Don't trust whatever was true when this alarm was scheduled — re-verify against
-            // current state, since activity (which reschedules this same alarm name forward)
-            // could have resumed between scheduling and firing.
-            const stillStale = session && session.type === 'count' && (
-                (session.cooldownEndTime && now > session.cooldownEndTime) ||
-                (now - (session.lastActive || session.startTime) > SESSION_INACTIVITY_TIMEOUT_MS)
-            );
-            if (!stillStale) return;
-
-            delete sessions[domain];
-            await chrome.storage.local.set({ activeSessions: sessions });
-            await syncSpanStateSerialized(now);
-        });
+        // Proactive backstop for the span-tracking system (scheduled limits): makes sure a span
+        // that this count session was keeping open gets closed promptly once the session's
+        // cooldown/inactivity clock runs out, even if the domain never gets another navigation
+        // event at all (e.g. browser closed for the day) for the lazy checks to run against.
+        //
+        // This must NOT delete the session itself, and must NOT forcibly navigate any open tab.
+        // Deleting here would throw away session.watchedVideoIds — the whitelist that lets a tab
+        // sitting on an already-granted video keep watching it uninterrupted once the cooldown
+        // ends, instead of retroactively getting blocked. That decision needs the URL of the
+        // specific navigation being checked (to tell "still-known content" apart from "a
+        // genuinely new video"), which only checkAccessSerialized's lazy, per-navigation check
+        // has — so finalizing (deleting) an expired count session is left entirely to that lazy
+        // path, the same way blocking itself is enforced lazily, only on a tab's own next real
+        // navigation (reload, a new video, a new tab), exactly like every other access decision
+        // in this file.
+        await syncSpanState(Date.now());
     } else if (alarm.name.startsWith('schedlimit_')) {
         const limitId = alarm.name.slice('schedlimit_'.length);
         const now = Date.now();

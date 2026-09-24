@@ -234,7 +234,12 @@ test('Count session hitting its cap keeps the span open — cooldown still allow
     expect(global.__store__.scheduledSpanStart).not.toBeNull();
 });
 
-test('Count session\'s span closes once the cooldown has fully expired and the session is cleaned up', async () => {
+// The homepage (no video ID) is "known content" once a count session's cooldown has expired —
+// it stays reachable and does NOT delete the session (see checkAccessSerialized's count branch:
+// only a genuinely new video forces cleanup). The span must still close on this navigation,
+// independent of whether the session itself gets deleted — isSessionGrantingAccess already
+// treats a cooldown-expired count session as not-granting regardless.
+test('Count session\'s span closes once the cooldown has fully expired, even though the homepage stays allowed', async () => {
     const cooldownEnd = NOW - 1000; // already expired
     setStorage({
         scheduledLimits: [{ id: 'sl_cur', days: [TODAY], startHour: 0, startMinute: 0, endHour: 23, endMinute: 59, limitMinutes: 30 }],
@@ -247,7 +252,27 @@ test('Count session\'s span closes once the cooldown has fully expired and the s
         scheduledSpanStart: NOW - 60000,
         scheduledSpanLastLiveness: NOW,
     });
-    await nav(TAB, YT_HOME); // triggers the "cooldown expired -> delete session" cleanup path
+    await nav(TAB, YT_HOME);
+    expect(global.__store__.activeSessions['youtube.com']).toBeDefined();
+    expect(global.__store__.scheduledSpanStart).toBeNull();
+});
+
+// A genuinely NEW video (not on the session's whitelist) after the cooldown has fully expired
+// is the one case that still finalizes (deletes) the session — see checkAccessSerialized.
+test('Count session\'s span closes and the session is cleaned up once a genuinely new video is requested past cooldown', async () => {
+    const cooldownEnd = NOW - 1000; // already expired
+    setStorage({
+        scheduledLimits: [{ id: 'sl_cur', days: [TODAY], startHour: 0, startMinute: 0, endHour: 23, endMinute: 59, limitMinutes: 30 }],
+        activeSessions: {
+            'youtube.com': {
+                type: 'count', startTime: NOW - 60000, targetCount: 1, videosWatched: 2,
+                watchedVideoIds: ['aaa111', 'bbb222'], lastActive: NOW - 60000, cooldownEndTime: cooldownEnd,
+            },
+        },
+        scheduledSpanStart: NOW - 60000,
+        scheduledSpanLastLiveness: NOW,
+    });
+    await nav(TAB, 'https://www.youtube.com/watch?v=ccc333'); // not on the whitelist
     expect(global.__store__.activeSessions['youtube.com']).toBeUndefined();
     expect(global.__store__.scheduledSpanStart).toBeNull();
 });
