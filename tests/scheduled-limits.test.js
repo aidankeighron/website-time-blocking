@@ -234,12 +234,11 @@ test('Count session hitting its cap keeps the span open — cooldown still allow
     expect(global.__store__.scheduledSpanStart).not.toBeNull();
 });
 
-// The homepage (no video ID) is "known content" once a count session's cooldown has expired —
-// it stays reachable and does NOT delete the session (see checkAccessSerialized's count branch:
-// only a genuinely new video forces cleanup). The span must still close on this navigation,
-// independent of whether the session itself gets deleted — isSessionGrantingAccess already
-// treats a cooldown-expired count session as not-granting regardless.
-test('Count session\'s span closes once the cooldown has fully expired, even though the homepage stays allowed', async () => {
+// The homepage (no video ID) is NOT "known content" once a count session's cooldown has
+// expired — only a video already on the whitelist stays reachable (see checkAccessSerialized's
+// count branch). Landing on the homepage past cooldown finalizes (deletes) the stale session and
+// throws up the block screen, same as a genuinely new video would. The span must close either way.
+test('Count session\'s span closes and the session is cleaned up once the cooldown has fully expired and the homepage is visited', async () => {
     const cooldownEnd = NOW - 1000; // already expired
     setStorage({
         scheduledLimits: [{ id: 'sl_cur', days: [TODAY], startHour: 0, startMinute: 0, endHour: 23, endMinute: 59, limitMinutes: 30 }],
@@ -253,7 +252,7 @@ test('Count session\'s span closes once the cooldown has fully expired, even tho
         scheduledSpanLastLiveness: NOW,
     });
     await nav(TAB, YT_HOME);
-    expect(global.__store__.activeSessions['youtube.com']).toBeDefined();
+    expect(global.__store__.activeSessions['youtube.com']).toBeUndefined();
     expect(global.__store__.scheduledSpanStart).toBeNull();
 });
 

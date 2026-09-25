@@ -1020,13 +1020,21 @@ async function checkAccessSerialized(tabId, url, domain) {
                  session.watchedVideoIds.push(session.lastVideoId); // migrates old single ID
             }
 
-            // A video already on the whitelist (or a non-video page, e.g. the homepage) stays
-            // reachable even once this session's clock has fully run out below — only a
-            // genuinely NEW video needs to force the user back through the block screen. Without
-            // this, every already-granted video retroactively gets blocked the moment the
-            // cooldown ends (or the inactivity window lapses), even though nothing changed about
-            // that specific video's access.
-            const isKnownContent = !videoId || session.watchedVideoIds.includes(videoId);
+            // A video already on the whitelist stays reachable even once this session's clock
+            // has fully run out below — only a genuinely NEW video needs to force the user back
+            // through the block screen. Without this, every already-granted video retroactively
+            // gets blocked the moment the cooldown ends (or the inactivity window lapses), even
+            // though nothing changed about that specific video's access.
+            //
+            // Deliberately NOT extended to non-video pages (e.g. the homepage, search, the
+            // subscriptions feed): those have no videoId, so a blanket "no ID = known content"
+            // rule let a stale/expired session silently keep serving them with no prompt at all,
+            // while the very next click into an actual (new) video still correctly ended the
+            // session and threw up the block screen — the user only found out the session had
+            // expired after already queuing up videos to watch, not the moment they landed on
+            // the site. A non-video page must re-trigger the same expiry/prompt flow a new video
+            // would.
+            const isKnownContent = !!videoId && session.watchedVideoIds.includes(videoId);
 
             // Check Expiry first
             if (session.cooldownEndTime && now > session.cooldownEndTime) {

@@ -310,8 +310,9 @@ test('YouTube: count session expires after 2 hours of inactivity', async () => {
 // checkAccessSerialized AND the count_inactivity_ alarm unconditionally deleted the whole
 // session (watchedVideoIds included) the moment the cooldown/inactivity clock ran out, so there
 // was nothing left to tell "already-granted video" apart from "brand new video" by the time the
-// next navigation event fired. A video already on the whitelist (or a non-video page) must stay
-// reachable once the cooldown is over; only a genuinely new video should force a fresh session.
+// next navigation event fired. A video already on the whitelist must stay reachable once the
+// cooldown is over; only a genuinely new video (or a non-video page like the homepage — see the
+// next test) should force a fresh session.
 test('YouTube: revisiting an already-watched video after cooldown ends is still allowed', async () => {
     setStorage({
         activeSessions: {
@@ -334,7 +335,13 @@ test('YouTube: revisiting an already-watched video after cooldown ends is still 
     expect(global.__store__.activeSessions['youtube.com'].watchedVideoIds).toContain('v3');
 });
 
-test('YouTube: the homepage stays reachable after cooldown ends, without wiping the session', async () => {
+// Regression test: after a count session's cooldown ended, opening the YouTube homepage showed
+// no blocking UI at all — the old `!videoId` clause in isKnownContent treated every non-video
+// page as "already granted," so the stale session was silently left active. Only clicking into
+// an actual new video (no videoId match) triggered the block screen, so the block only ever
+// appeared once the user had already started watching, not the moment they landed on the site.
+// The homepage must re-trigger the same expiry/prompt flow a genuinely new video does.
+test('YouTube: the homepage re-triggers the block screen and ends the session once cooldown expires', async () => {
     setStorage({
         activeSessions: {
             'youtube.com': {
@@ -351,8 +358,10 @@ test('YouTube: the homepage stays reachable after cooldown ends, without wiping 
     });
 
     await nav(YT_HOME);
-    expectNoRedirect(TAB);
-    expect(global.__store__.activeSessions['youtube.com']).toBeDefined();
+    expectPromptRedirect(TAB);
+    const url = __mockFns__['tabs.update'].mock.calls[0][1].url;
+    expect(url).toContain('Session%20Expired');
+    expect(global.__store__.activeSessions['youtube.com']).toBeUndefined();
 });
 
 test('YouTube: a genuinely NEW video after cooldown ends still requires a fresh session', async () => {
