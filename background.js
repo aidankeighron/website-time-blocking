@@ -279,6 +279,10 @@ function refreshSessionLiveness(domain, now = Date.now()) {
         const sessions = data.activeSessions || {};
         const session = sessions[domain];
         if (!session || (session.type !== 'count' && session.type !== 'single_url')) return;
+        // A count session whose cooldown has fully run out is over: open tabs left on its
+        // already-granted videos must not keep reviving it, or the session (and its X/N
+        // count) never resets and a brand-new video tab inherits it indefinitely.
+        if (session.type === 'count' && session.cooldownEndTime && now > session.cooldownEndTime) return;
 
         session.lastActive = now;
         sessions[domain] = session;

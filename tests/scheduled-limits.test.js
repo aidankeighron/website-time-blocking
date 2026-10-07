@@ -504,6 +504,27 @@ test('scheduledLimitLivenessPing message also refreshes a count session\'s lastA
     expect(calls.length).toBeGreaterThan(0); // backstop alarm pushed out to match the fresh lastActive
 });
 
+// Regression test: forgotten background tabs on already-granted videos kept pinging forever,
+// reviving a count session whose cooldown had long expired so it never reset overnight.
+test('scheduledLimitLivenessPing does not revive a count session whose cooldown has expired', async () => {
+    const staleLastActive = NOW - 8 * 60 * 60 * 1000;
+    setStorage({
+        activeSessions: {
+            'youtube.com': {
+                type: 'count',
+                startTime: NOW - 9 * 60 * 60 * 1000,
+                targetCount: 9,
+                videosWatched: 5,
+                watchedVideoIds: ['aaa111'],
+                lastActive: staleLastActive,
+                cooldownEndTime: NOW - 7 * 60 * 60 * 1000,
+            },
+        },
+    });
+    await fireMessage({ action: 'scheduledLimitLivenessPing', domain: 'youtube.com' });
+    expect(global.__store__.activeSessions['youtube.com'].lastActive).toBe(staleLastActive);
+});
+
 // ────────────────────────────────────────────────────────────────────────────
 // Alarm reconciliation / cleanup
 // ────────────────────────────────────────────────────────────────────────────
