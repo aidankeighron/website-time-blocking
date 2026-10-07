@@ -148,6 +148,9 @@
         if (heartbeatInterval) return;
         heartbeatInterval = setInterval(() => {
             if (!currentSession) return;
+            // Only a tab the user can actually see counts as activity; forgotten background
+            // tabs must not keep a session alive forever.
+            if (document.visibilityState !== 'visible') return;
             chrome.runtime.sendMessage({ action: 'scheduledLimitLivenessPing', domain }).catch(() => {});
         }, 30000);
     }
