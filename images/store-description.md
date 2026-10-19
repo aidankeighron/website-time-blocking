@@ -11,4 +11,4 @@ Blocks adds a pause before you get in. Every time you open a site on your list, 
 - **Your own list**: Instagram, Reddit, and YouTube come ready to go. Add any other site.
 - **Half Full integration**: optionally lift limits once your tasks are done.
 
-Dark, simple, and set up in under a minute. Take your attention back.
+Easy, simple, and set up in under a minute. Take your attention back.
