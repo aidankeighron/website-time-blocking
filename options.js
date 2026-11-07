@@ -26,12 +26,46 @@ document.querySelectorAll('.day-cb').forEach(cb => {
     });
 });
 
-// Time pickers: try to open native picker on click; do NOT block keyboard so
-// PC users can type the time directly (Firefox desktop needs this fallback).
+// Day presets: one click for the common day sets.
+const DAY_PRESETS = { weekdays: [1, 2, 3, 4, 5], weekends: [0, 6], all: [0, 1, 2, 3, 4, 5, 6] };
+document.querySelectorAll('.day-presets [data-preset]').forEach(btn => {
+    btn.addEventListener('click', () => setSelectedDays(DAY_PRESETS[btn.dataset.preset]));
+});
+
+function setSelectedDays(days) {
+    document.querySelectorAll('.day-cb').forEach(cb => {
+        cb.checked = days.includes(parseInt(cb.value, 10));
+        cb.closest('.day-label').classList.toggle('selected', cb.checked);
+    });
+}
+
+// Time pickers: open the native picker on tap (touch/pen), where it's the only sensible way
+// in. NOT on a mouse click: in desktop Chrome an open picker swallows typed digits, so a PC
+// user who clicks the field and types "0930" got nothing (or a wrong time once they hit
+// Enter). Mouse users type directly, or use the browser's own clock icon.
+// Keyboard input is never blocked (PC Firefox has no picker at all, see v1.24).
 ['sl-start', 'sl-end'].forEach(id => {
     const el = document.getElementById(id);
-    el.addEventListener('click', () => { try { el.showPicker(); } catch (_) {} });
+    let lastPointerType = null;
+    el.addEventListener('pointerdown', (e) => { lastPointerType = e.pointerType; });
+    el.addEventListener('click', () => {
+        const type = lastPointerType;
+        lastPointerType = null;
+        if (type === 'mouse') return;
+        try { el.showPicker(); } catch (_) {}
+    });
 });
+
+// Limit type: "Allow N min" vs "Block fully". Block hides the minutes field and saves 0.
+document.querySelectorAll('input[name="sl-mode"]').forEach(r => r.addEventListener('change', syncSlMode));
+
+function syncSlMode() {
+    const block = document.getElementById('sl-mode-block').checked;
+    document.getElementById('sl-cap-wrap').hidden = block;
+    document.getElementById('sl-limit-hint').textContent = block
+        ? 'No access to any target site in this window.'
+        : 'Shared across all target sites in this window.';
+}
 
 // Track which entry is being edited (null = new entry)
 let editingLimitId = null;
@@ -68,6 +102,7 @@ function restoreOptions() {
         items.targetSites.forEach(site => createSiteElement(site));
         renderScheduledLimitList(items.scheduledLimits);
     });
+    restoreReminders();
 }
 
 function createSiteElement(site) {
@@ -270,11 +305,7 @@ function openScheduledLimitModal(existingEntry) {
     editingLimitId = existingEntry ? existingEntry.id : null;
     document.getElementById('sl-modal-title').textContent = existingEntry ? 'Edit Scheduled Limit' : 'New Scheduled Limit';
 
-    document.querySelectorAll('.day-cb').forEach(cb => {
-        const checked = existingEntry ? existingEntry.days.includes(parseInt(cb.value, 10)) : false;
-        cb.checked = checked;
-        cb.closest('.day-label').classList.toggle('selected', checked);
-    });
+    setSelectedDays(existingEntry ? existingEntry.days : []);
 
     document.getElementById('sl-start').value = existingEntry
         ? `${String(existingEntry.startHour).padStart(2,'0')}:${String(existingEntry.startMinute).padStart(2,'0')}`
@@ -282,7 +313,11 @@ function openScheduledLimitModal(existingEntry) {
     document.getElementById('sl-end').value = existingEntry
         ? `${String(existingEntry.endHour).padStart(2,'0')}:${String(existingEntry.endMinute).padStart(2,'0')}`
         : '';
-    document.getElementById('sl-limit').value = existingEntry ? existingEntry.limitMinutes : '';
+    const isFullBlock = !!existingEntry && existingEntry.limitMinutes === 0;
+    document.getElementById('sl-mode-block').checked = isFullBlock;
+    document.getElementById('sl-mode-cap').checked = !isFullBlock;
+    document.getElementById('sl-limit').value = existingEntry && !isFullBlock ? existingEntry.limitMinutes : '';
+    syncSlMode();
     document.getElementById('sl-error').textContent = '';
     document.getElementById('sl-overnight-hint').style.display = 'none';
     document.getElementById('sl-start').oninput = updateSlOvernightHint;
@@ -304,14 +339,16 @@ function saveScheduledLimit() {
     const startVal = document.getElementById('sl-start').value;
     const endVal   = document.getElementById('sl-end').value;
     const days     = Array.from(document.querySelectorAll('.day-cb:checked')).map(cb => parseInt(cb.value, 10));
-    const limitVal = parseInt(document.getElementById('sl-limit').value, 10);
+    const fullBlock = document.getElementById('sl-mode-block').checked;
+    // "Allow 0 min" still means a full block, same as before the Block fully option existed.
+    const limitVal = fullBlock ? 0 : parseInt(document.getElementById('sl-limit').value, 10);
     const selectedPatternId = document.getElementById('sl-hf-pattern').value;
 
     if (days.length === 0) { errorEl.textContent = 'Please select at least one day.'; return; }
     if (!startVal || !endVal) { errorEl.textContent = 'Please set both start and end times.'; return; }
     if (startVal === endVal) { errorEl.textContent = 'Start and end times cannot be the same.'; return; }
     if (!Number.isInteger(limitVal) || limitVal < 0) {
-        errorEl.textContent = 'Please enter minutes allowed (0 or more: 0 means a full block).';
+        errorEl.textContent = 'Enter minutes allowed (0 or more), or choose Block fully.';
         return;
     }
 
@@ -482,3 +519,67 @@ async function refreshHalfFullPatterns(auth) {
         await chrome.storage.local.set({ halfFullPatterns: patterns });
     } catch { /* silently fail */ }
 }
+
+// --- Intervention Reminders ---
+// remindersEnabled (bool, default off) and reminders (string[]) in storage. The switch saves
+// immediately; text edits are saved with the Save Reminders button.
+
+function restoreReminders() {
+    chrome.storage.local.get({ remindersEnabled: false, reminders: [] }, (items) => {
+        document.getElementById('reminders-enabled').checked = !!items.remindersEnabled;
+        document.getElementById('reminders-text').value = (items.reminders || []).join('\n');
+        document.getElementById('reminders-editor').hidden = !items.remindersEnabled;
+        setRemindersDirty(false);
+    });
+}
+
+function setRemindersDirty(dirty) {
+    document.getElementById('reminders-dirty').hidden = !dirty;
+}
+
+function onRemindersToggle() {
+    const enabled = document.getElementById('reminders-enabled').checked;
+    const textarea = document.getElementById('reminders-text');
+    document.getElementById('reminders-editor').hidden = !enabled;
+    const update = { remindersEnabled: enabled };
+    // First time on: prefill with examples (they also show off the tags) and save them, so the
+    // feature works right away instead of switching on to an empty list.
+    if (enabled && WTBReminders.parseReminders(textarea.value).length === 0) {
+        textarea.value = WTBReminders.DEFAULT_REMINDERS.join('\n');
+        update.reminders = WTBReminders.DEFAULT_REMINDERS.slice();
+        update.reminderDeck = [];
+        setRemindersDirty(false);
+    }
+    chrome.storage.local.set(update, () => {
+        showStatus(enabled ? 'Reminders on.' : 'Reminders off.');
+    });
+}
+
+function saveReminders() {
+    const textarea = document.getElementById('reminders-text');
+    const reminders = WTBReminders.parseReminders(textarea.value);
+    textarea.value = reminders.join('\n');
+    // Reset the shuffle bag so edited lines join the rotation straight away.
+    chrome.storage.local.set({ reminders, reminderDeck: [] }, () => {
+        setRemindersDirty(false);
+        showStatus(reminders.length ? 'Reminders saved.' : 'Reminders saved (list is empty).');
+    });
+}
+
+function insertReminderTag(tag) {
+    const ta = document.getElementById('reminders-text');
+    const start = ta.selectionStart ?? ta.value.length;
+    const end = ta.selectionEnd ?? ta.value.length;
+    ta.setRangeText(tag, start, end, 'end');
+    ta.focus();
+    setRemindersDirty(true);
+}
+
+document.getElementById('reminders-enabled').addEventListener('change', onRemindersToggle);
+document.getElementById('save-reminders').addEventListener('click', saveReminders);
+document.getElementById('reminders-text').addEventListener('input', () => setRemindersDirty(true));
+document.querySelectorAll('.tag-chip').forEach(btn => {
+    // mousedown preventDefault keeps the textarea's caret/selection where the user left it.
+    btn.addEventListener('mousedown', e => e.preventDefault());
+    btn.addEventListener('click', () => insertReminderTag(btn.dataset.tag));
+});
