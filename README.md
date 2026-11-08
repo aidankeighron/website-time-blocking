@@ -9,6 +9,8 @@ A browser extension designed to bring intentionality to your browsing habits. In
     - **Time Duration**: Set a timer (in minutes) for how long you want to browse.
     - **Video Count**: Limit usage by the number of videos watched (YouTube support).
 - **Enforced Breaks**: Once a session ends, a cooldown period prevents immediate re-entry, helping break the loop of compulsive checking.
+- **Reminders**: Write your own reminders in Settings. The intervention screen shows a different one each visit, with tags like `{site}`, `{visits}`, `{time}` and `{day}` filled in live. Off by default.
+- **Scheduled Limits**: Cap or fully block all target sites on chosen days and times.
 - **Customizable**: Manage your own list of target sites and configure cooldown durations via the settings page.
 
 ## Installation

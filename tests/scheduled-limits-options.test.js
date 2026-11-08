@@ -411,3 +411,62 @@ test('restoreOptions reads scheduledLimits directly from storage with no sendMes
     expect(global.chrome.runtime.sendMessage).not.toHaveBeenCalled();
     expect(document.getElementById('scheduled-limit-list').textContent).toMatch(/20 min/);
 });
+
+
+// ---------------------------------------------------------------------------
+// v1.34 dialog: day presets, Block fully option, mouse clicks don't open the picker
+// ---------------------------------------------------------------------------
+
+test('day presets select weekdays, weekends and every day', () => {
+    document.getElementById('add-scheduled-limit-btn').click();
+    document.querySelector('[data-preset="weekdays"]').click();
+    expect([0, 1, 2, 3, 4, 5, 6].map(isDaySelected)).toEqual([false, true, true, true, true, true, false]);
+    document.querySelector('[data-preset="weekends"]').click();
+    expect([0, 1, 2, 3, 4, 5, 6].map(isDaySelected)).toEqual([true, false, false, false, false, false, true]);
+    document.querySelector('[data-preset="all"]').click();
+    expect([0, 1, 2, 3, 4, 5, 6].every(isDaySelected)).toBe(true);
+});
+
+test('Block fully hides the minutes field and saves limitMinutes 0', () => {
+    const store = setupChrome();
+    loadOptionsPage();
+    document.getElementById('add-scheduled-limit-btn').click();
+    clickDay(1);
+    document.getElementById('sl-start').value = '09:00';
+    document.getElementById('sl-end').value = '17:00';
+    const block = document.getElementById('sl-mode-block');
+    block.checked = true;
+    block.dispatchEvent(new Event('change'));
+    expect(document.getElementById('sl-cap-wrap').hidden).toBe(true);
+    document.getElementById('sl-save-btn').click();
+    expect(store.scheduledLimits).toHaveLength(1);
+    expect(store.scheduledLimits[0].limitMinutes).toBe(0);
+});
+
+test('editing a full-block entry opens with Block fully selected', () => {
+    setupChrome({ scheduledLimits: [{ id: 'sl_1', days: [1], startHour: 9, startMinute: 0, endHour: 17, endMinute: 0, limitMinutes: 0 }] });
+    loadOptionsPage();
+    document.dispatchEvent(new Event('DOMContentLoaded'));
+    const editBtn = [...document.querySelectorAll('#scheduled-limit-list button')].find(b => b.textContent === 'Edit');
+    editBtn.click();
+    expect(document.getElementById('sl-mode-block').checked).toBe(true);
+    expect(document.getElementById('sl-cap-wrap').hidden).toBe(true);
+});
+
+test('mouse click on a time field does not open the picker (typing must work)', () => {
+    const el = document.getElementById('sl-start');
+    const down = new MouseEvent('pointerdown', { bubbles: true });
+    Object.defineProperty(down, 'pointerType', { value: 'mouse' });
+    el.dispatchEvent(down);
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(el.showPicker).not.toHaveBeenCalled();
+});
+
+test('touch tap on a time field opens the picker', () => {
+    const el = document.getElementById('sl-end');
+    const down = new MouseEvent('pointerdown', { bubbles: true });
+    Object.defineProperty(down, 'pointerType', { value: 'touch' });
+    el.dispatchEvent(down);
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(el.showPicker).toHaveBeenCalled();
+});

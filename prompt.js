@@ -26,6 +26,16 @@ function _sendMessage(msg) {
         })();
     });
 }
+function _storageSet(data) {
+    if (_isExtPage) return chrome.storage.local.set(data);
+    return new Promise(resolve => {
+        (function poll() {
+            if (window.__extBridge) return window.__extBridge('set', JSON.stringify(data), () => resolve());
+            setTimeout(poll, 50);
+        })();
+    });
+}
+
 const intendedUrl = params.get('url');
 const cooldownVal = params.get('cooldown');
 const msgVal = params.get('msg');
@@ -246,7 +256,48 @@ async function init() {
 
     setupNormalUI(delay);
     appendTipBar();
+    showReminder(domain);
     watchStorageForDomain(domain);
+}
+
+function currentDomain() {
+    return intendedUrl ? getDomain(intendedUrl) : (hostname !== 'Unknown' ? getDomain('http://' + hostname) : null);
+}
+
+// --- Intervention Reminders ---
+// One of the user's own reminders, drawn once per page load (shuffle bag, see reminders.js)
+// and kept for any later re-render of this same page (e.g. the cooldown screen re-rendering
+// after another tab changes the cooldown), so a re-render doesn't skip through the deck or
+// count as another visit.
+let reminderPromise = null;
+
+function loadReminder(domain) {
+    if (reminderPromise) return reminderPromise;
+    reminderPromise = (async () => {
+        if (typeof WTBReminders === 'undefined' || !domain) return null;
+        const data = await _storageGet({ remindersEnabled: false, reminders: [], reminderDeck: [], reminderLast: null, reminderVisits: null });
+        if (!data.remindersEnabled) return null;
+        const list = (data.reminders || []).filter(r => typeof r === 'string' && r.trim());
+        if (list.length === 0) return null;
+        const visits = WTBReminders.bumpVisits(data.reminderVisits, domain);
+        const { text, deck } = WTBReminders.drawReminder(list, data.reminderDeck, data.reminderLast);
+        await _storageSet({ reminderDeck: deck, reminderLast: text, reminderVisits: visits });
+        return { text: WTBReminders.fillTags(text, { site: domain, visits: visits.counts[domain] }) };
+    })().catch(() => null);
+    return reminderPromise;
+}
+
+// Shown as plain text, all at once: no reveal animation.
+async function showReminder(domain) {
+    const r = await loadReminder(domain);
+    const box = document.getElementById('reminder');
+    if (!r || !box) return;
+    box.innerHTML = '';
+    const quote = document.createElement('p');
+    quote.className = 'reminder-text';
+    quote.textContent = r.text;
+    box.appendChild(quote);
+    box.hidden = false;
 }
 
 // True (and navigates) if activeSessions[domain] currently grants access — shared between the
@@ -289,6 +340,7 @@ function renderCooldownUI(endTime, cooldownInfo, delay, extDuration) {
     }
     showCooldownUI(endTime, cooldownInfo, delay, extDuration);
     appendTipBar();
+    showReminder(currentDomain());
 }
 
 // This page renders once from a storage snapshot and otherwise only updates itself via its own
@@ -389,6 +441,7 @@ function showCooldownUI(endTime, cooldownInfo, delay = 0, extensionDuration = 30
             <h1 class="cooldown-title">Cooldown Active</h1>
             <p>You cannot access ${escapeHtml(hostname)} for another <span id="cd-timer">${minutesLeft}</span> minutes.</p>
             <p class="small-text">Go do something else!</p>
+            <div id="reminder" class="reminder" hidden></div>
             ${bypassHtml}
         </div>
     ` + '<link rel="stylesheet" href="prompt.css">';

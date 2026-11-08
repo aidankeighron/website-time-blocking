@@ -56,6 +56,29 @@ h1 {
     color: var(--foreground);
 }
 
+/* Intervention reminder: the user's own words, shown above the session picker */
+.reminder {
+    background-color: var(--alt-background);
+    border-radius: var(--radius-lg);
+    padding: var(--space-10);
+    margin: 0 0 var(--space-11);
+}
+
+/* Cooldown screen: sits under "Go do something else!" */
+.small-text + .reminder { margin-top: var(--space-10); }
+
+.reminder[hidden] { display: none; }
+
+.reminder-text {
+    margin: 0;
+    font-size: var(--font-size-md);
+    font-weight: bold;
+    line-height: 1.45;
+    color: var(--foreground);
+    text-wrap: balance;
+    min-height: 1.45em;
+}
+
 .view {
     display: none;
     margin-bottom: var(--space-11);

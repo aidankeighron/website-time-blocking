@@ -195,12 +195,12 @@ input[type="time"]:focus {
     font-size: var(--font-size-sm);
 }
 
-/* Day-of-week picker for schedule blocks */
+/* Day-of-week picker for schedule blocks: a fixed 7-column grid, so all seven days always sit
+   on one row at equal width (the old flex-wrap layout pushed Sa onto its own stretched row). */
 .day-picker {
-    display: flex;
-    gap: var(--space-6);
-    flex-wrap: wrap;
-    margin-top: var(--space-5);
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: var(--space-4);
 }
 
 .day-label {
@@ -208,11 +208,11 @@ input[type="time"]:focus {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 34px;
-    height: 34px;
+    height: 36px;
+    min-width: 0;
     background-color: var(--alt-background-neutral);
     border-radius: var(--radius-md);
-    font-size: var(--font-size-xs);
+    font-size: var(--font-size-sm);
     font-weight: bold;
     cursor: pointer;
     user-select: none;
@@ -395,3 +395,232 @@ select:focus {
     overflow: hidden;
     text-overflow: ellipsis;
 }
+
+/* --- Scheduled limit dialog fields --- */
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-5);
+    margin-bottom: var(--space-10);
+}
+
+.field-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: var(--space-5);
+}
+
+.field-label {
+    font-size: var(--font-size-xs);
+    font-weight: bold;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--alt-foreground-neutral);
+}
+
+.field-note {
+    margin: 0;
+    font-size: var(--font-size-xs);
+    color: var(--alt-foreground-neutral);
+}
+
+.day-presets {
+    display: flex;
+    gap: var(--space-6);
+}
+
+.link-btn {
+    background: none;
+    padding: 0;
+    color: var(--accent-text);
+    font-size: var(--font-size-xs);
+    font-weight: normal;
+}
+
+.link-btn:hover { text-decoration: underline; animation: none; }
+
+.time-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
+    gap: var(--space-6);
+}
+
+.time-row input[type="time"] {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.time-sep { color: var(--alt-foreground-neutral); font-size: var(--font-size-sm); }
+
+.limit-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-6);
+}
+
+.seg {
+    display: flex;
+    background-color: var(--alt-background-neutral);
+    border-radius: var(--radius-md);
+    padding: 3px;
+}
+
+.seg-opt {
+    position: relative;
+    padding: var(--space-4) var(--space-7);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-sm);
+    font-weight: bold;
+    color: var(--alt-foreground-neutral);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.seg-opt input {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.seg-opt:has(input:checked) {
+    background-color: var(--accent);
+    color: var(--foreground);
+}
+
+.seg-opt:focus-within {
+    outline: var(--border-accent);
+    outline-offset: 1px;
+}
+
+.cap-wrap {
+    display: flex;
+    align-items: center;
+    gap: var(--space-5);
+    font-size: var(--font-size-sm);
+    color: var(--alt-foreground-neutral);
+}
+
+.cap-wrap[hidden] { display: none; }
+
+.cap-wrap input[type="number"] {
+    width: 72px;
+    flex-grow: 0;
+    text-align: center;
+}
+
+@media (max-width: 420px) {
+    .modal-box { padding: var(--space-10); width: 94%; }
+}
+
+/* --- Intervention Reminders --- */
+.section-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--space-6);
+}
+
+.switch {
+    position: relative;
+    display: inline-flex;
+    flex-shrink: 0;
+    width: 40px;
+    height: 22px;
+    cursor: pointer;
+}
+
+.switch input {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+    z-index: 1;
+}
+
+.switch-track {
+    width: 100%;
+    height: 100%;
+    border-radius: var(--radius-pill);
+    background-color: var(--alt-background-neutral);
+    transition: background-color var(--transition-base);
+}
+
+.switch-track::after {
+    content: "";
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background-color: var(--alt-foreground-neutral);
+    transition: transform var(--transition-base), background-color var(--transition-base);
+}
+
+.switch input:checked + .switch-track { background-color: var(--accent); }
+.switch input:checked + .switch-track::after { transform: translateX(18px); background-color: var(--foreground); }
+.switch input:focus-visible + .switch-track { outline: var(--border-accent); outline-offset: 2px; }
+
+#reminders-editor[hidden] { display: none; }
+
+#reminders-text {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 110px;
+    resize: vertical;
+    background-color: var(--alt-background-neutral);
+    color: var(--foreground);
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    padding: var(--space-6);
+    font-family: var(--font-family);
+    font-size: var(--font-size-sm);
+    line-height: 1.6;
+    outline: none;
+}
+
+#reminders-text:focus { border: var(--border-accent); }
+
+.tag-help {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3) var(--space-5);
+    margin: var(--space-5) 0 var(--space-8);
+    font-size: var(--font-size-xs);
+    color: var(--alt-foreground-neutral);
+}
+
+.tag-help > span:first-child { flex-basis: 100%; }
+
+.tag-chip {
+    background-color: var(--alt-background);
+    color: var(--accent-text);
+    padding: 2px var(--space-5);
+    border-radius: var(--radius-pill);
+    font-size: var(--font-size-xs);
+    font-weight: bold;
+}
+
+.tag-desc { margin-right: var(--space-5); }
+
+.save-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-7);
+}
+
+.hint-inline {
+    font-size: var(--font-size-xs);
+    color: var(--alt-foreground-neutral);
+}
+
+.hint-inline[hidden] { display: none; }
