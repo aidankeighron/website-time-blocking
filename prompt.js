@@ -282,55 +282,22 @@ function loadReminder(domain) {
         const visits = WTBReminders.bumpVisits(data.reminderVisits, domain);
         const { text, deck } = WTBReminders.drawReminder(list, data.reminderDeck, data.reminderLast);
         await _storageSet({ reminderDeck: deck, reminderLast: text, reminderVisits: visits });
-        const styles = WTBReminders.STYLES;
-        return {
-            text: WTBReminders.fillTags(text, { site: domain, visits: visits.counts[domain] }),
-            style: styles[Math.floor(Math.random() * styles.length)],
-            shown: false,
-        };
+        return { text: WTBReminders.fillTags(text, { site: domain, visits: visits.counts[domain] }) };
     })().catch(() => null);
     return reminderPromise;
 }
 
-let reminderTimers = [];
-
+// Shown as plain text, all at once: no reveal animation.
 async function showReminder(domain) {
     const r = await loadReminder(domain);
     const box = document.getElementById('reminder');
     if (!r || !box) return;
-    reminderTimers.forEach(t => clearInterval(t));
-    reminderTimers = [];
-
-    box.hidden = false;
     box.innerHTML = '';
     const quote = document.createElement('p');
     quote.className = 'reminder-text';
+    quote.textContent = r.text;
     box.appendChild(quote);
-
-    const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    // Animate only the first time this page shows it; a re-render just shows the text.
-    const style = (r.shown || reduceMotion) ? 'none' : r.style;
-    r.shown = true;
-    box.dataset.style = style;
-
-    if (style === 'type') {
-        let i = 0;
-        const t = setInterval(() => {
-            quote.textContent = r.text.slice(0, ++i);
-            if (i >= r.text.length) clearInterval(t);
-        }, 35);
-        reminderTimers.push(t);
-    } else if (style === 'words') {
-        r.text.split(' ').forEach((w, i) => {
-            const span = document.createElement('span');
-            span.className = 'reminder-word';
-            span.style.animationDelay = `${i * 160}ms`;
-            span.textContent = w + ' ';
-            quote.appendChild(span);
-        });
-    } else {
-        quote.textContent = r.text;
-    }
+    box.hidden = false;
 }
 
 // True (and navigates) if activeSessions[domain] currently grants access — shared between the

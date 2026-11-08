@@ -17,10 +17,6 @@
         { tag: '{day}',    desc: 'weekday' },
     ];
 
-    // How the reminder appears on screen. Picked at random per visit so the box never looks the
-    // same twice in a row and the eye can't learn to skip it.
-    const STYLES = ['type', 'words', 'fade'];
-
     function parseReminders(text) {
         return String(text || '')
             .split('\n')
@@ -79,7 +75,7 @@
         return { date: today, counts };
     }
 
-    const api = { DEFAULT_REMINDERS, TAGS, STYLES, parseReminders, fillTags, drawReminder, bumpVisits, localDateKey };
+    const api = { DEFAULT_REMINDERS, TAGS, parseReminders, fillTags, drawReminder, bumpVisits, localDateKey };
     root.WTBReminders = api;
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
