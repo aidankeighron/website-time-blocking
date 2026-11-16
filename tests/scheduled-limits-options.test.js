@@ -90,25 +90,55 @@ test('clicking sl-start calls showPicker', () => {
     expect(el.showPicker).toHaveBeenCalled();
 });
 
+// A tap: pointerdown with a pointerType, then the click. Returns the click event.
+function tap(el, pointerType = 'touch') {
+    const down = new MouseEvent('pointerdown', { bubbles: true });
+    Object.defineProperty(down, 'pointerType', { value: pointerType });
+    el.dispatchEvent(down);
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+    el.dispatchEvent(click);
+    return click;
+}
+
 test('touch: confirming start time opens the end picker once; confirming end does not reopen anything', () => {
     const start = document.getElementById('sl-start');
     const end = document.getElementById('sl-end');
-    start.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    expect(start.showPicker).toHaveBeenCalledTimes(1);
+    tap(start);
     start.dispatchEvent(new Event('change', { bubbles: true }));
     expect(end.showPicker).toHaveBeenCalledTimes(1);
     end.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(start.showPicker).toHaveBeenCalledTimes(1);
+    expect(start.showPicker).not.toHaveBeenCalled();
     expect(end.showPicker).toHaveBeenCalledTimes(1);
 });
 
-test('touch: tapping end directly opens only the end picker', () => {
+test('touch: tapping end directly never opens a second picker', () => {
     const start = document.getElementById('sl-start');
     const end = document.getElementById('sl-end');
-    end.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    tap(end);
     end.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(end.showPicker).toHaveBeenCalledTimes(1);
+    expect(end.showPicker).not.toHaveBeenCalled();
     expect(start.showPicker).not.toHaveBeenCalled();
+});
+
+test('touch: a tap leaves opening to the browser (no extra showPicker, default not prevented)', () => {
+    // Regression: the browser opens its own picker on tap; a showPicker() on top queued a
+    // second picker, so Cancel had to be pressed twice before the dialog stayed closed.
+    ['sl-start', 'sl-end'].forEach(id => {
+        const el = document.getElementById(id);
+        const click = tap(el);
+        expect(click.defaultPrevented).toBe(false);
+        expect(el.showPicker).not.toHaveBeenCalled();
+    });
+});
+
+test('touch: cancelling the start picker and tapping end does not chain later', () => {
+    const start = document.getElementById('sl-start');
+    const end = document.getElementById('sl-end');
+    tap(start);        // start picker opens, user presses Cancel (no change event)
+    tap(end);          // end picker opens
+    end.dispatchEvent(new Event('change', { bubbles: true }));
+    start.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(end.showPicker).not.toHaveBeenCalled();
 });
 
 test('typing a start time (no touch tap) does not pop open the end picker', () => {
@@ -489,11 +519,46 @@ test('mouse click on a time field does not open the picker (typing must work)', 
     expect(el.showPicker).not.toHaveBeenCalled();
 });
 
-test('touch tap on a time field opens the picker', () => {
+test('pen tap on a time field also leaves opening to the browser', () => {
     const el = document.getElementById('sl-end');
     const down = new MouseEvent('pointerdown', { bubbles: true });
-    Object.defineProperty(down, 'pointerType', { value: 'touch' });
+    Object.defineProperty(down, 'pointerType', { value: 'pen' });
     el.dispatchEvent(down);
     el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    expect(el.showPicker).toHaveBeenCalled();
+    expect(el.showPicker).not.toHaveBeenCalled();
+});
+
+// ---------------------------------------------------------------------------
+// Max session length / max videos settings
+// ---------------------------------------------------------------------------
+
+describe('max session settings', () => {
+    test('save stores the values; anything above 1440 min / 100 videos is trimmed', () => {
+        const store = setupChrome();
+        loadOptionsPage();
+        document.getElementById('max-session-minutes').value = '5000';
+        document.getElementById('max-session-videos').value = '12';
+        document.getElementById('save-config').click();
+        expect(store.maxSessionMinutes).toBe(1440);
+        expect(store.maxSessionVideos).toBe(12);
+        expect(document.getElementById('max-session-minutes').value).toBe('1440');
+    });
+
+    test('empty or invalid falls back to the ceilings', () => {
+        const store = setupChrome();
+        loadOptionsPage();
+        document.getElementById('max-session-minutes').value = '';
+        document.getElementById('max-session-videos').value = '0';
+        document.getElementById('save-config').click();
+        expect(store.maxSessionMinutes).toBe(1440);
+        expect(store.maxSessionVideos).toBe(100);
+    });
+
+    test('restore shows the saved values', () => {
+        setupChrome({ maxSessionMinutes: 45, maxSessionVideos: 8 });
+        loadOptionsPage();
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        expect(document.getElementById('max-session-minutes').value).toBe('45');
+        expect(document.getElementById('max-session-videos').value).toBe('8');
+    });
 });

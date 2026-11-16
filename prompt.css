@@ -210,6 +210,23 @@ input[type="number"]:focus {
     margin: var(--space-5) 0;
 }
 
+/* Active scheduled limit, shown on the session picker */
+.active-limit {
+    background-color: var(--alt-background-neutral);
+    border-left: 3px solid var(--accent-text);
+    border-radius: var(--radius-md);
+    padding: var(--space-6) var(--space-7);
+    margin: var(--space-8) 0;
+    text-align: left;
+    font-size: var(--font-size-sm);
+}
+
+.active-limit[hidden] { display: none; }
+
+.active-limit p { margin: var(--space-3) 0; }
+
+.active-limit-title { font-weight: bold; }
+
 /* Rotating tip bar */
 #tip-bar {
     position: fixed;

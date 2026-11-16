@@ -1479,6 +1479,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sendResponse({ success: success });
         }).catch(err => sendResponse({ success: false, error: err.message }));
         return true;
+    } else if (message.action === 'getSessionCaps') {
+        getSessionCaps(Date.now())
+            .then(caps => sendResponse(caps))
+            .catch(() => sendResponse(null));
+        return true;
     } else if (message.action === 'scheduledLimitLivenessPing') {
         const now = Date.now();
         Promise.all([
@@ -1568,9 +1573,76 @@ async function syncOtherPromptTabs(domain, excludeTabId) {
     }
 }
 
+// --- Session caps ---
+// Hard ceilings that no setting can raise: they only exist to stop absurd entries (a typo like
+// 99999 minutes). Anything above is silently trimmed down, no warning.
+const HARD_MAX_SESSION_MINUTES = 24 * 60;
+const HARD_MAX_SESSION_VIDEOS = 100;
+
+function clampSetting(value, hardMax) {
+    const n = parseInt(value, 10);
+    if (!Number.isFinite(n) || n <= 0) return hardMax;
+    return Math.min(n, hardMax);
+}
+
+// Everything that caps how big a fresh session can be right now: the user's own max-length /
+// max-videos settings (themselves capped by the hard ceilings), plus every currently-active
+// usage-capped scheduled limit. A scheduled limit with less budget left than the time until its
+// window ends would cut a longer duration session off anyway, so duration sessions are trimmed
+// to that budget up front (durationCapMinutes). A limit whose window ends before its budget runs
+// out doesn't cap anything: once the window is over it stops counting.
+async function getSessionCaps(now = Date.now()) {
+    const data = await chrome.storage.local.get({
+        maxSessionMinutes: HARD_MAX_SESSION_MINUTES,
+        maxSessionVideos: HARD_MAX_SESSION_VIDEOS,
+        scheduledLimits: [], scheduledUsage: {}, scheduledSpanStart: null, scheduledSpanLastLiveness: null,
+    });
+    const maxMinutes = clampSetting(data.maxSessionMinutes, HARD_MAX_SESSION_MINUTES);
+    const maxVideos = clampSetting(data.maxSessionVideos, HARD_MAX_SESSION_VIDEOS);
+
+    const entries = (data.scheduledLimits || []).filter(e => e.limitMinutes > 0 && isWindowActive(e, now));
+    const patternActiveMap = entries.length ? await buildHalfFullPatternMap(entries, now) : {};
+    const limits = [];
+    let scheduledCap = null;
+    for (const entry of entries) {
+        if (entry.halfFullPattern && patternActiveMap[entry.id] === false) continue;
+        const used = computeUsedSeconds(entry, data.scheduledUsage || {}, data.scheduledSpanStart, data.scheduledSpanLastLiveness, now);
+        const remainingSeconds = Math.max(0, entry.limitMinutes * 60 - used);
+        const windowEndTime = getWindowEndTimestamp(entry, now);
+        const remainingMinutes = Math.max(1, Math.ceil(remainingSeconds / 60));
+        const capsDuration = remainingSeconds * 1000 < windowEndTime - now;
+        if (capsDuration) scheduledCap = scheduledCap == null ? remainingMinutes : Math.min(scheduledCap, remainingMinutes);
+        limits.push({
+            id: entry.id,
+            limitMinutes: entry.limitMinutes,
+            remainingMinutes,
+            windowEndTime,
+            endHour: entry.endHour,
+            endMinute: entry.endMinute,
+            capsDuration,
+        });
+    }
+
+    const durationCapMinutes = scheduledCap == null ? maxMinutes : Math.min(maxMinutes, scheduledCap);
+    return { maxMinutes, maxVideos, durationCapMinutes, limits };
+}
+
 async function startSessionInternal(url, type, value, origin, originTabId) {
     const domain = getDomain(url);
     if (!domain) return false;
+
+    // Silently trim oversized requests (see getSessionCaps). Extend/Finish grants are tiny
+    // one-off windows from the cooldown screen and only get the hard ceilings.
+    if (type === 'duration' || type === 'count') {
+        const n = Number(value);
+        if (!Number.isFinite(n) || n <= 0) return false;
+        if (origin === 'fresh') {
+            const caps = await getSessionCaps();
+            value = type === 'duration' ? Math.min(n, caps.durationCapMinutes) : Math.min(Math.floor(n), caps.maxVideos);
+        } else {
+            value = type === 'duration' ? Math.min(n, HARD_MAX_SESSION_MINUTES) : Math.min(Math.floor(n), HARD_MAX_SESSION_VIDEOS);
+        }
+    }
 
     const data = await chrome.storage.local.get(['activeSessions', 'cooldowns']);
     const sessions = data.activeSessions || {};

@@ -12,7 +12,8 @@
         <h1>Intervention</h1>
         <p id="target-site-display">You are trying to access...</p>
         <div id="reminder" class="reminder" hidden></div>
-        
+        <div id="active-limit" class="active-limit" hidden></div>
+
         <div class="type-selector">
             <button class="type-btn active" data-type="duration">Duration</button>
             <button class="type-btn" data-type="count" id="count-btn" style="display: none;">Count</button>
@@ -22,7 +23,7 @@
             <!-- Duration View -->
             <div id="view-duration" class="view">
                 <label for="duration-input">Enter duration (minutes):</label>
-                <input type="number" id="duration-input" min="1" placeholder="e.g. 15">
+                <input type="number" id="duration-input" min="1" max="1440" placeholder="e.g. 15">
             </div>
 
             <!-- Count View -->

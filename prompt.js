@@ -71,6 +71,9 @@ const TIPS = [
     { text: 'Tip: Input Delay adds a pause before you can confirm, a moment to reconsider.' },
     { text: 'Tip: Add multiple sites to the block list and manage them all from Settings.' },
     { text: 'Tip: Open Settings to adjust cooldown length, input delay, and extension duration.' },
+    { text: 'Tip: Set a Max Session Length in Settings, longer durations get trimmed down to it.' },
+    { text: 'Tip: Set Max Videos per Session in Settings to cap how many videos a Count session allows.' },
+    { text: 'Tip: During a Scheduled Limit, duration sessions are trimmed to the time you have left.' },
     { text: 'Connect Half Full to make limits conditional on your task list.', hf: true },
     { text: 'Half Full is a task manager, when tasks are done, your limits can lift automatically.', hf: true },
     { text: 'Earn your screen time: link Half Full so limits lift once your tasks are checked off.', hf: true },
@@ -257,7 +260,63 @@ async function init() {
     setupNormalUI(delay);
     appendTipBar();
     showReminder(domain);
+    showActiveLimit();
     watchStorageForDomain(domain);
+}
+
+// --- Session caps ---
+// Mirrors background.js's getSessionCaps. Background is the source of truth (it trims every
+// startSession request itself); this copy just lets the picker show the active limit and trim
+// the typed number in place, so what the user sees matches what they'll get.
+const DEFAULT_SESSION_CAPS = { maxMinutes: 1440, maxVideos: 100, durationCapMinutes: 1440, limits: [] };
+let sessionCapsPromise = null;
+
+function loadSessionCaps() {
+    if (!sessionCapsPromise) {
+        sessionCapsPromise = _sendMessage({ action: 'getSessionCaps' })
+            .then(caps => (caps && typeof caps.durationCapMinutes === 'number') ? caps : DEFAULT_SESSION_CAPS)
+            .catch(() => DEFAULT_SESSION_CAPS);
+    }
+    return sessionCapsPromise;
+}
+
+function clampInputValue(input, max) {
+    const n = parseInt(input.value, 10);
+    if (Number.isFinite(n) && n > max) input.value = String(max);
+}
+
+async function showActiveLimit() {
+    const caps = await loadSessionCaps();
+    const durationInput = document.getElementById('duration-input');
+    const countInput = document.getElementById('count-input');
+    if (durationInput) {
+        durationInput.max = String(caps.durationCapMinutes);
+        clampInputValue(durationInput, caps.durationCapMinutes);
+    }
+    if (countInput) {
+        countInput.max = String(caps.maxVideos);
+        clampInputValue(countInput, caps.maxVideos);
+    }
+
+    const box = document.getElementById('active-limit');
+    if (!box || !caps.limits || caps.limits.length === 0) return;
+    box.innerHTML = '';
+    const title = document.createElement('p');
+    title.className = 'active-limit-title';
+    title.textContent = caps.limits.length > 1 ? 'Scheduled limits active' : 'Scheduled limit active';
+    box.appendChild(title);
+    caps.limits.forEach(l => {
+        const line = document.createElement('p');
+        line.textContent = `${l.remainingMinutes} of ${l.limitMinutes} min left, until ${formatTimeLocal(l.endHour, l.endMinute)}.`;
+        box.appendChild(line);
+    });
+    if (caps.limits.some(l => l.capsDuration)) {
+        const note = document.createElement('p');
+        note.className = 'small-text';
+        note.textContent = `Duration sessions max out at ${caps.durationCapMinutes} min.`;
+        box.appendChild(note);
+    }
+    box.hidden = false;
 }
 
 function currentDomain() {
@@ -510,9 +569,17 @@ function setupNormalUI(delay = 0) {
     // Default existing setup
     document.getElementById('view-count').innerHTML = `
         <label for="count-input">Enter number of videos:</label>
-        <input type="number" id="count-input" min="1" placeholder="e.g. 3">
+        <input type="number" id="count-input" min="1" max="100" placeholder="e.g. 3">
     `;
-    
+
+    // Trim an over-the-cap number as soon as the user leaves the field (and again on confirm).
+    document.getElementById('duration-input').addEventListener('change', async (e) => {
+        clampInputValue(e.target, (await loadSessionCaps()).durationCapMinutes);
+    });
+    document.getElementById('count-input').addEventListener('change', async (e) => {
+        clampInputValue(e.target, (await loadSessionCaps()).maxVideos);
+    });
+
     setupTypeSwitching();
     // updateUnlimitedStatus(); // Removed
     
@@ -563,25 +630,32 @@ function setupTypeSwitching() {
 }
 
 
-function handleConfirm() {
+async function handleConfirm() {
     const errorDiv = document.getElementById('error-msg');
     errorDiv.textContent = '';
     const selectedType = window.selectedType || 'duration';
+    const caps = await loadSessionCaps();
 
     if (selectedType === 'duration') {
-        const minutes = parseInt(document.getElementById('duration-input').value, 10);
+        const input = document.getElementById('duration-input');
+        let minutes = parseInt(input.value, 10);
         if (!minutes || minutes <= 0) {
             errorDiv.textContent = "Please enter a valid positive duration.";
             return;
         }
+        minutes = Math.min(minutes, caps.durationCapMinutes);
+        input.value = String(minutes);
         startSession('duration', minutes, 'fresh');
 
     } else if (selectedType === 'count') {
-        const count = parseInt(document.getElementById('count-input').value, 10);
+        const input = document.getElementById('count-input');
+        let count = parseInt(input.value, 10);
         if (!count || count <= 0) {
             errorDiv.textContent = "Please enter a valid positive number of videos.";
             return;
         }
+        count = Math.min(count, caps.maxVideos);
+        input.value = String(count);
         startSession('count', count, 'fresh');
     }
 }

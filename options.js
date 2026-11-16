@@ -39,11 +39,21 @@ function setSelectedDays(days) {
     });
 }
 
-// Time pickers: open the native picker on tap (touch/pen), where it's the only sensible way
-// in. NOT on a mouse click: in desktop Chrome an open picker swallows typed digits, so a PC
-// user who clicks the field and types "0930" got nothing (or a wrong time once they hit
-// Enter). Mouse users type directly, or use the browser's own clock icon.
-// Keyboard input is never blocked (PC Firefox has no picker at all, see v1.24).
+// Time pickers. Mouse: never open the picker on click (in desktop Chrome an open picker
+// swallows typed digits, so a PC user who clicks the field and types "0930" got nothing).
+// Mouse users type directly, or use the browser's own clock icon. Keyboard input is never
+// blocked (PC Firefox has no picker at all, see v1.24).
+//
+// Touch/pen: the mobile browser already opens its own picker as the tap's default action.
+// Calling showPicker() on top of that queued a SECOND picker, so pressing Cancel closed the
+// first one and the second popped straight back up (Cancel had to be pressed once or twice).
+// A tap is now left entirely to the browser: exactly one picker, and Cancel closes it.
+// showPicker() is only used where nothing else opens a picker: a click with no pointer info,
+// and the start -> end chain below.
+function openTimePicker(el) {
+    try { el.showPicker(); } catch (_) {}
+}
+
 ['sl-start', 'sl-end'].forEach(id => {
     const el = document.getElementById(id);
     let lastPointerType = null;
@@ -52,9 +62,11 @@ function setSelectedDays(days) {
         const type = lastPointerType;
         lastPointerType = null;
         if (type === 'mouse') return;
-        // Only a start-time picker opened by touch chains into the end picker.
-        if (id === 'sl-start') startOpenedByTouch = true;
-        try { el.showPicker(); } catch (_) {}
+        // Only a tap on start arms the start -> end chain. A tap on end (e.g. after cancelling
+        // the start picker) disarms a chain left over from that cancelled start picker.
+        startOpenedByTouch = id === 'sl-start';
+        if (type === 'touch' || type === 'pen') return; // the browser opens its own picker
+        openTimePicker(el);
     });
 });
 
@@ -66,7 +78,7 @@ let startOpenedByTouch = false;
 document.getElementById('sl-start').addEventListener('change', () => {
     if (!startOpenedByTouch) return;
     startOpenedByTouch = false;
-    try { document.getElementById('sl-end').showPicker(); } catch (_) {}
+    openTimePicker(document.getElementById('sl-end'));
 });
 
 // Limit type: "Allow N min" vs "Block fully". Block hides the minutes field and saves 0.
@@ -97,6 +109,17 @@ function getDomain(url) {
     }
 }
 
+// Hard ceilings, mirrored from background.js (HARD_MAX_SESSION_MINUTES / _VIDEOS). The settings
+// can lower them but never raise them; empty or invalid falls back to the ceiling.
+const MAX_SESSION_MINUTES = 24 * 60;
+const MAX_SESSION_VIDEOS = 100;
+
+function clampSessionCap(value, hardMax) {
+    const n = parseInt(value, 10);
+    if (!Number.isFinite(n) || n <= 0) return hardMax;
+    return Math.min(n, hardMax);
+}
+
 function restoreOptions() {
     chrome.storage.local.get({
         targetSites: ['instagram.com', 'reddit.com', 'youtube.com'],
@@ -104,8 +127,12 @@ function restoreOptions() {
         countCooldown: 30,
         inputDelay: 0,
         extensionDuration: 30,
+        maxSessionMinutes: MAX_SESSION_MINUTES,
+        maxSessionVideos: MAX_SESSION_VIDEOS,
         scheduledLimits: [],
     }, (items) => {
+        document.getElementById('max-session-minutes').value = clampSessionCap(items.maxSessionMinutes, MAX_SESSION_MINUTES);
+        document.getElementById('max-session-videos').value = clampSessionCap(items.maxSessionVideos, MAX_SESSION_VIDEOS);
         document.getElementById('duration-cooldown').value = items.durationCooldown;
         document.getElementById('count-cooldown').value = items.countCooldown;
         document.getElementById('input-delay').value = items.inputDelay;
@@ -156,8 +183,12 @@ function saveOptions() {
     const countCooldown = parseInt(document.getElementById('count-cooldown').value, 10) || 30;
     const inputDelay = parseInt(document.getElementById('input-delay').value, 10) || 0;
     const extensionDuration = parseInt(document.getElementById('extension-duration').value, 10) || 30;
+    const maxSessionMinutes = clampSessionCap(document.getElementById('max-session-minutes').value, MAX_SESSION_MINUTES);
+    const maxSessionVideos = clampSessionCap(document.getElementById('max-session-videos').value, MAX_SESSION_VIDEOS);
+    document.getElementById('max-session-minutes').value = maxSessionMinutes;
+    document.getElementById('max-session-videos').value = maxSessionVideos;
     const targetSites = Array.from(document.querySelectorAll('#site-list li')).map(li => li.childNodes[0].textContent);
-    chrome.storage.local.set({ targetSites, durationCooldown, countCooldown, inputDelay, extensionDuration }, () => {
+    chrome.storage.local.set({ targetSites, durationCooldown, countCooldown, inputDelay, extensionDuration, maxSessionMinutes, maxSessionVideos }, () => {
         showStatus('Settings saved.');
     });
 }
