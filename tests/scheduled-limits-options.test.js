@@ -90,6 +90,33 @@ test('clicking sl-start calls showPicker', () => {
     expect(el.showPicker).toHaveBeenCalled();
 });
 
+test('touch: confirming start time opens the end picker once; confirming end does not reopen anything', () => {
+    const start = document.getElementById('sl-start');
+    const end = document.getElementById('sl-end');
+    start.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(start.showPicker).toHaveBeenCalledTimes(1);
+    start.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(end.showPicker).toHaveBeenCalledTimes(1);
+    end.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(start.showPicker).toHaveBeenCalledTimes(1);
+    expect(end.showPicker).toHaveBeenCalledTimes(1);
+});
+
+test('touch: tapping end directly opens only the end picker', () => {
+    const start = document.getElementById('sl-start');
+    const end = document.getElementById('sl-end');
+    end.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    end.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(end.showPicker).toHaveBeenCalledTimes(1);
+    expect(start.showPicker).not.toHaveBeenCalled();
+});
+
+test('typing a start time (no touch tap) does not pop open the end picker', () => {
+    const end = document.getElementById('sl-end');
+    document.getElementById('sl-start').dispatchEvent(new Event('change', { bubbles: true }));
+    expect(end.showPicker).not.toHaveBeenCalled();
+});
+
 test('showPicker throwing does not crash the page', () => {
     const el = document.getElementById('sl-start');
     el.showPicker.mockImplementation(() => { throw new DOMException('No user gesture'); });

@@ -52,8 +52,21 @@ function setSelectedDays(days) {
         const type = lastPointerType;
         lastPointerType = null;
         if (type === 'mouse') return;
+        // Only a start-time picker opened by touch chains into the end picker.
+        if (id === 'sl-start') startOpenedByTouch = true;
         try { el.showPicker(); } catch (_) {}
     });
+});
+
+// Flow: tap start -> pick -> OK -> end picker opens -> pick -> OK -> done.
+// Tapping end directly opens only the end picker and closes on OK (never loops back).
+// 'change' fires only when the picker is confirmed with OK (Cancel doesn't fire it), and the
+// end field never re-opens anything, so the sequence is strictly start -> end -> finish.
+let startOpenedByTouch = false;
+document.getElementById('sl-start').addEventListener('change', () => {
+    if (!startOpenedByTouch) return;
+    startOpenedByTouch = false;
+    try { document.getElementById('sl-end').showPicker(); } catch (_) {}
 });
 
 // Limit type: "Allow N min" vs "Block fully". Block hides the minutes field and saves 0.
