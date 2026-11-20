@@ -416,6 +416,27 @@ test('Clearing a numeric settings field before saving falls back to its default 
     }, 0);
 });
 
+test('Extension Duration 0 (extend disabled) is saved as 0, not replaced by the default', done => {
+    const store = {};
+    setupChrome(store);
+    loadOptionsPage();
+    document.dispatchEvent(new Event('DOMContentLoaded'));
+
+    document.getElementById('extension-duration').value = '0';
+    document.getElementById('input-delay').value = '0';
+    document.getElementById('duration-cooldown').value = '0'; // below min=1 -> raised to 1
+    document.getElementById('save-config').click();
+
+    setTimeout(() => {
+        expect(store.extensionDuration).toBe(0);
+        expect(store.inputDelay).toBe(0);
+        expect(store.durationCooldown).toBe(1);
+        expect(document.getElementById('extension-duration').value).toBe('0');
+        expect(document.getElementById('duration-cooldown').value).toBe('1');
+        done();
+    }, 0);
+});
+
 // ---------------------------------------------------------------------------
 // Editing a scheduled limit whose Half-Full pattern is no longer locally known
 // ---------------------------------------------------------------------------

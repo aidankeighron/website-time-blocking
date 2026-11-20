@@ -107,10 +107,23 @@ li {
     flex-grow: 0;
 }
 
+/* Pinned to the bottom of the window: in normal flow it sat below every section, off-screen
+   on most displays, so pressing Save looked like nothing happened. */
 #status {
+    position: fixed;
+    left: 50%;
+    bottom: var(--space-10);
+    transform: translateX(-50%);
+    z-index: 200;
+    max-width: calc(100% - 2 * var(--space-10));
+    padding: var(--space-5) var(--space-10);
+    border-radius: var(--radius-md);
+    background: var(--alt-background-neutral);
     text-align: center;
-    height: 20px;
+    pointer-events: none;
 }
+
+#status:empty { display: none; }
 
 .hint {
     color: var(--alt-foreground-neutral);

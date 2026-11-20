@@ -174,15 +174,30 @@ function addSite() {
     }
 }
 
+// Read a whole-number setting. Only an empty/invalid field falls back to the default:
+// `parseInt(...) || fallback` also replaced a deliberate 0 (e.g. Extension Duration 0 =
+// "no extend button") with the fallback, so saving 0 silently stored 30 again. Values below
+// the field's minimum are raised to it.
+function readIntSetting(id, fallback, min) {
+    const n = parseInt(document.getElementById(id).value, 10);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(n, min);
+}
+
 function saveOptions() {
     // Fall back to the same defaults restoreOptions/background.js already use elsewhere when a
     // field is cleared before saving — parseInt('') is NaN, and persisting NaN silently breaks
     // every downstream `value * 60 * 1000` computation for that setting until the user notices
     // and re-enters a number.
-    const durationCooldown = parseInt(document.getElementById('duration-cooldown').value, 10) || 30;
-    const countCooldown = parseInt(document.getElementById('count-cooldown').value, 10) || 30;
-    const inputDelay = parseInt(document.getElementById('input-delay').value, 10) || 0;
-    const extensionDuration = parseInt(document.getElementById('extension-duration').value, 10) || 30;
+    const durationCooldown = readIntSetting('duration-cooldown', 30, 1);
+    const countCooldown = readIntSetting('count-cooldown', 30, 1);
+    const inputDelay = readIntSetting('input-delay', 0, 0);
+    const extensionDuration = readIntSetting('extension-duration', 30, 0);
+    // Show what was actually saved, so a corrected value is never a silent surprise.
+    document.getElementById('duration-cooldown').value = durationCooldown;
+    document.getElementById('count-cooldown').value = countCooldown;
+    document.getElementById('input-delay').value = inputDelay;
+    document.getElementById('extension-duration').value = extensionDuration;
     const maxSessionMinutes = clampSessionCap(document.getElementById('max-session-minutes').value, MAX_SESSION_MINUTES);
     const maxSessionVideos = clampSessionCap(document.getElementById('max-session-videos').value, MAX_SESSION_VIDEOS);
     document.getElementById('max-session-minutes').value = maxSessionMinutes;
