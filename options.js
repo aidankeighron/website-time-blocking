@@ -126,7 +126,6 @@ function restoreOptions() {
         durationCooldown: 30,
         countCooldown: 30,
         inputDelay: 5,
-        extensionDuration: 30,
         maxSessionMinutes: MAX_SESSION_MINUTES,
         maxSessionVideos: MAX_SESSION_VIDEOS,
         scheduledLimits: [],
@@ -136,7 +135,6 @@ function restoreOptions() {
         document.getElementById('duration-cooldown').value = items.durationCooldown;
         document.getElementById('count-cooldown').value = items.countCooldown;
         document.getElementById('input-delay').value = items.inputDelay;
-        document.getElementById('extension-duration').value = items.extensionDuration;
         const list = document.getElementById('site-list');
         list.innerHTML = '';
         items.targetSites.forEach(site => createSiteElement(site));
@@ -144,6 +142,8 @@ function restoreOptions() {
     });
     restoreReminders();
     restoreMorningBlocking();
+    restoreOverride();
+    restoreShortForm();
 }
 
 function createSiteElement(site) {
@@ -193,18 +193,16 @@ function saveOptions() {
     const durationCooldown = readIntSetting('duration-cooldown', 30, 1);
     const countCooldown = readIntSetting('count-cooldown', 30, 1);
     const inputDelay = readIntSetting('input-delay', 5, 0);
-    const extensionDuration = readIntSetting('extension-duration', 30, 0);
     // Show what was actually saved, so a corrected value is never a silent surprise.
     document.getElementById('duration-cooldown').value = durationCooldown;
     document.getElementById('count-cooldown').value = countCooldown;
     document.getElementById('input-delay').value = inputDelay;
-    document.getElementById('extension-duration').value = extensionDuration;
     const maxSessionMinutes = clampSessionCap(document.getElementById('max-session-minutes').value, MAX_SESSION_MINUTES);
     const maxSessionVideos = clampSessionCap(document.getElementById('max-session-videos').value, MAX_SESSION_VIDEOS);
     document.getElementById('max-session-minutes').value = maxSessionMinutes;
     document.getElementById('max-session-videos').value = maxSessionVideos;
     const targetSites = Array.from(document.querySelectorAll('#site-list li')).map(li => li.childNodes[0].textContent);
-    chrome.storage.local.set({ targetSites, durationCooldown, countCooldown, inputDelay, extensionDuration, maxSessionMinutes, maxSessionVideos }, () => {
+    chrome.storage.local.set({ targetSites, durationCooldown, countCooldown, inputDelay, maxSessionMinutes, maxSessionVideos }, () => {
         showStatus('Settings saved.');
     });
 }
@@ -707,3 +705,104 @@ function saveMorningBlocking() {
 
 document.getElementById('morning-enabled').addEventListener('change', onMorningToggle);
 document.getElementById('save-morning').addEventListener('click', saveMorningBlocking);
+
+// --- Emergency Override ---
+// One switch, two kinds: 'emergency' (N passes a week of M minutes) or 'extend' (the old
+// Extend button, N seconds, unlimited). The switch and the kind save immediately; the numbers
+// are saved with the Save button. Defaults mirror background.js's OVERRIDE_DEFAULTS.
+const OVERRIDE_DEFAULTS = { extensionDuration: 30, emergencyOverrideMinutes: 5, emergencyOverridesPerWeek: 2 };
+
+function selectedOverrideType() {
+    return document.getElementById('override-type-extend').checked ? 'extend' : 'emergency';
+}
+
+function syncOverrideFields() {
+    const extend = selectedOverrideType() === 'extend';
+    document.getElementById('override-extend-fields').hidden = !extend;
+    document.getElementById('override-emergency-fields').hidden = extend;
+}
+
+function restoreOverride() {
+    chrome.storage.local.get(['overrideEnabled', 'overrideType', 'extensionDuration',
+        'emergencyOverrideMinutes', 'emergencyOverridesPerWeek'], (items) => {
+        let enabled = items.overrideEnabled;
+        let type = items.overrideType;
+        if (typeof enabled !== 'boolean') {
+            // Not migrated yet (see background.js's migrateOverrideSettings): the pre-1.38
+            // Extension Duration setting decides, 0 meaning off.
+            enabled = typeof items.extensionDuration === 'number' && items.extensionDuration > 0;
+            if (enabled) type = 'extend';
+        }
+        type = type === 'extend' ? 'extend' : 'emergency';
+        document.getElementById('override-enabled').checked = enabled;
+        document.getElementById('override-editor').hidden = !enabled;
+        document.getElementById(`override-type-${type}`).checked = true;
+        const secs = items.extensionDuration;
+        document.getElementById('extension-duration').value = typeof secs === 'number' && secs > 0 ? secs : OVERRIDE_DEFAULTS.extensionDuration;
+        document.getElementById('emergency-minutes').value = items.emergencyOverrideMinutes ?? OVERRIDE_DEFAULTS.emergencyOverrideMinutes;
+        document.getElementById('emergency-per-week').value = items.emergencyOverridesPerWeek ?? OVERRIDE_DEFAULTS.emergencyOverridesPerWeek;
+        syncOverrideFields();
+    });
+}
+
+function onOverrideToggle() {
+    const enabled = document.getElementById('override-enabled').checked;
+    document.getElementById('override-editor').hidden = !enabled;
+    chrome.storage.local.set({ overrideEnabled: enabled, overrideType: selectedOverrideType() }, () => {
+        showStatus(enabled ? 'Emergency override on.' : 'Emergency override off.');
+    });
+}
+
+function onOverrideTypeChange() {
+    syncOverrideFields();
+    const type = selectedOverrideType();
+    chrome.storage.local.set({ overrideType: type }, () => {
+        showStatus(type === 'extend' ? 'Using quick extend.' : 'Using emergency passes.');
+    });
+}
+
+function saveOverride() {
+    const extensionDuration = Math.min(readIntSetting('extension-duration', OVERRIDE_DEFAULTS.extensionDuration, 1), 24 * 60 * 60);
+    const emergencyOverrideMinutes = Math.min(readIntSetting('emergency-minutes', OVERRIDE_DEFAULTS.emergencyOverrideMinutes, 1), 24 * 60);
+    const emergencyOverridesPerWeek = Math.min(readIntSetting('emergency-per-week', OVERRIDE_DEFAULTS.emergencyOverridesPerWeek, 1), 100);
+    document.getElementById('extension-duration').value = extensionDuration;
+    document.getElementById('emergency-minutes').value = emergencyOverrideMinutes;
+    document.getElementById('emergency-per-week').value = emergencyOverridesPerWeek;
+    chrome.storage.local.set({
+        overrideType: selectedOverrideType(),
+        extensionDuration, emergencyOverrideMinutes, emergencyOverridesPerWeek,
+    }, () => showStatus('Emergency override saved.'));
+}
+
+document.getElementById('override-enabled').addEventListener('change', onOverrideToggle);
+document.querySelectorAll('input[name="override-type"]').forEach(r => r.addEventListener('change', onOverrideTypeChange));
+document.getElementById('save-override').addEventListener('click', saveOverride);
+
+// --- Block Short-Form Content ---
+// shortFormBlock = { youtubeShorts, instagramReels, facebookReels, tiktok } (all off by
+// default). Each switch saves immediately; the background then sends any open tab already on
+// newly-blocked content to the block screen.
+const SHORT_FORM_NAMES = {
+    youtubeShorts: 'YouTube Shorts', instagramReels: 'Instagram Reels',
+    facebookReels: 'Facebook Reels', tiktok: 'TikTok',
+};
+
+function restoreShortForm() {
+    chrome.storage.local.get({ shortFormBlock: {} }, (items) => {
+        const map = items.shortFormBlock || {};
+        document.querySelectorAll('.sf-toggle').forEach(cb => { cb.checked = !!map[cb.dataset.kind]; });
+    });
+}
+
+function onShortFormToggle(e) {
+    const cb = e.target;
+    chrome.storage.local.get({ shortFormBlock: {} }, (items) => {
+        const shortFormBlock = { ...(items.shortFormBlock || {}), [cb.dataset.kind]: cb.checked };
+        chrome.storage.local.set({ shortFormBlock }, () => {
+            showStatus(`${SHORT_FORM_NAMES[cb.dataset.kind]} ${cb.checked ? 'blocked' : 'unblocked'}.`);
+            chrome.runtime.sendMessage({ action: 'shortFormChanged' });
+        });
+    });
+}
+
+document.querySelectorAll('.sf-toggle').forEach(cb => cb.addEventListener('change', onShortFormToggle));

@@ -2,7 +2,7 @@
 // Test files access storage via global.__store__ and listeners via global.__listeners__.
 
 const store = {};
-const listeners = { onUpdated: [], onAlarm: [], onMessage: [], onRemoved: [], onCommitted: [], onHistoryStateUpdated: [], onReplaced: [], onInstalled: [], onStartup: [] };
+const listeners = { onUpdated: [], onAlarm: [], onMessage: [], onRemoved: [], onCommitted: [], onHistoryStateUpdated: [], onReplaced: [], onInstalled: [], onStartup: [], onStorageChanged: [] };
 const mockFns = {};
 
 function makeMockFn(key) {
@@ -83,6 +83,8 @@ global.chrome = {
         onStartup: { addListener: (fn) => listeners.onStartup.push(fn) },
     },
     storage: {
+        // Fired for chrome.storage.local.set (not for tests writing __store__ directly).
+        onChanged: { addListener: (fn) => listeners.onStorageChanged.push(fn) },
         local: {
             // Real chrome.storage.local serializes values across an IPC boundary — every get()
             // caller gets its OWN independent deep copy, and every set() copies its argument in
@@ -109,9 +111,12 @@ global.chrome = {
                 return deepClone(store);
             }),
             set: (data) => withStorageLatency(() => {
+                const changes = {};
                 for (const [k, v] of Object.entries(data)) {
+                    changes[k] = { oldValue: deepClone(store[k]), newValue: deepClone(v) };
                     store[k] = deepClone(v);
                 }
+                listeners.onStorageChanged.forEach(fn => fn(changes, 'local'));
             }),
             remove: (keys) => withStorageLatency(() => {
                 const list = Array.isArray(keys) ? keys : [keys];

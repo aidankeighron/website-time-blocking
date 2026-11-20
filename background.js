@@ -765,10 +765,9 @@ async function backstopPendingTab(tabId, url) {
     backstopInFlight.add(tabId);
     try {
         const domain = getDomain(url);
-        if (domain && await isTargetSite(url)) {
-            if (WTB_DEBUG) console.log('[WTB DEBUG] backstopPendingTab: re-checking', { tabId, url, domain });
-            const blocked = await checkAccess(tabId, url, domain);
-            if (WTB_DEBUG) console.log('[WTB DEBUG] backstopPendingTab: decision', { tabId, blocked });
+        const blocked = domain ? await guardNavigation(tabId, url, domain) : null;
+        if (blocked !== null) {
+            if (WTB_DEBUG) console.log('[WTB DEBUG] backstopPendingTab: decision', { tabId, url, blocked });
             if (!blocked) pendingPromptTabs.delete(tabId);
         } else {
             if (WTB_DEBUG) console.log('[WTB DEBUG] backstopPendingTab: no longer a target site, clearing', { tabId, url });
@@ -788,6 +787,65 @@ async function isTargetSite(url) {
     const result = data.targetSites.includes(domain);
     if (WTB_DEBUG) console.log('[WTB DEBUG] isTargetSite', { url, domain, targetSites: data.targetSites, result });
     return result;
+}
+
+// --- Short-form content blocking ---
+// Outright blocks (no session, no limit) for short-form feeds, chosen per platform in Settings.
+// Works on any site, target or not: blocking YouTube Shorts doesn't require putting YouTube
+// itself on the target list. Matching is by URL, which covers opening or scrolling into a
+// Short/Reel (the in-app SPA route changes come through onHistoryStateUpdated). Shorts/Reels
+// that only play inline inside another feed don't change the URL and aren't covered.
+const SHORT_FORM_KINDS = ['youtubeShorts', 'instagramReels', 'facebookReels', 'tiktok'];
+
+function shortFormKindOf(url) {
+    let u;
+    try { u = new URL(url); } catch { return null; }
+    if (!/^https?:$/.test(u.protocol)) return null;
+    const domain = getDomain(url);
+    const path = u.pathname;
+    if (domain === 'youtube.com' && /^\/shorts(\/|$)/.test(path)) return 'youtubeShorts';
+    // /reel/<id>, the /reels/ feed, and a profile's /<user>/reels/ tab.
+    if (domain === 'instagram.com' && /^\/(reels?(\/|$)|[^/]+\/reels\/?$)/.test(path)) return 'instagramReels';
+    if (domain === 'facebook.com' && /^\/(reels?(\/|$)|[^/]+\/reels\/?$)/.test(path)) return 'facebookReels';
+    if (domain === 'tiktok.com' || (domain && domain.endsWith('.tiktok.com'))) return 'tiktok';
+    return null;
+}
+
+// The kind of short-form block that applies to `url` right now, or null.
+async function shortFormBlockFor(url) {
+    const kind = shortFormKindOf(url);
+    if (!kind) return null;
+    const data = await chrome.storage.local.get({ shortFormBlock: {} });
+    return data.shortFormBlock && data.shortFormBlock[kind] ? kind : null;
+}
+
+function shortFormPromptUrl(url, kind) {
+    return chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=SHORT_FORM&kind=${kind}`);
+}
+
+// Sends open tabs already showing newly-blocked short-form content to the block screen.
+async function sweepTabsForShortForm() {
+    let tabs;
+    try { tabs = await chrome.tabs.query({}); } catch { return; }
+    await Promise.all(tabs.map(async tab => {
+        try {
+            const kind = tab.url && await shortFormBlockFor(tab.url);
+            if (kind) await redirectToPrompt(tab.id, shortFormPromptUrl(tab.url, kind));
+        } catch (e) {}
+    }));
+}
+
+// The single per-navigation decision: short-form block first (applies everywhere), then the
+// normal target-site access check. Returns true if blocked, false if a target site was allowed,
+// null if the URL isn't something this extension manages at all.
+async function guardNavigation(tabId, url, domain) {
+    const kind = await shortFormBlockFor(url);
+    if (kind) {
+        await redirectToPrompt(tabId, shortFormPromptUrl(url, kind));
+        return true;
+    }
+    if (await isTargetSite(url)) return checkAccess(tabId, url, domain);
+    return null;
 }
 
 // Core navigation listener
@@ -866,9 +924,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     processingTabs.add(tabId);
     lastCheckedNavKey.set(tabId, navKey);
     try {
-        if (await isTargetSite(currentUrl)) {
-            await checkAccess(tabId, currentUrl, domain);
-        }
+        await guardNavigation(tabId, currentUrl, domain);
     } finally {
         // Release the lock after a short delay so the redirect has time to take effect
         // before we listen again — this debounces the event stream.
@@ -920,9 +976,7 @@ async function handleWebNavigationEvent({ tabId, url, frameId }) {
     processingTabs.add(tabId);
     lastCheckedNavKey.set(tabId, navKey);
     try {
-        if (await isTargetSite(url)) {
-            await checkAccess(tabId, url, domain);
-        }
+        await guardNavigation(tabId, url, domain);
     } finally {
         setTimeout(() => { processingTabs.delete(tabId); }, 1000);
     }
@@ -1021,7 +1075,7 @@ async function checkAccessSerialized(tabId, url, domain) {
                  return true;
             } else if (now > endTime) {
                 // Expired -> Start Cooldown (Backdated to actual end time) -> Redirect
-                await endSessionAndStartCooldownInternal(domain, 'duration', endTime, session.origin === 'extend');
+                await endSessionAndStartCooldownInternal(domain, 'duration', endTime, isCooldownBypassOrigin(session.origin));
                 await syncSpanStateSerialized(now);
                 const promptUrl = chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=Time%20Up`);
                 await redirectToPrompt(tabId, promptUrl);
@@ -1301,7 +1355,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         // Verify session is still active and duration type
         if (data.activeSessions && data.activeSessions[domain] && data.activeSessions[domain].type === 'duration') {
              const session = data.activeSessions[domain];
-             await endSessionAndStartCooldown(domain, 'duration', session.endTime, session.origin === 'extend');
+             await endSessionAndStartCooldown(domain, 'duration', session.endTime, isCooldownBypassOrigin(session.origin));
 
              // This alarm ends a session with zero navigation involved — if it was the sole
              // granting session, the span must close here, or it would stay open indefinitely
@@ -1387,9 +1441,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 async function processTabForAccessById(tabId, url) {
     const domain = getDomain(url);
     if (!domain) return;
-    if (await isTargetSite(url)) {
-        await checkAccess(tabId, url, domain);
-    }
+    await guardNavigation(tabId, url, domain);
 }
 
 // A swapped-in tab's URL passes through several of the browser's OWN internal placeholder
@@ -1526,6 +1578,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // old cached result.
         chrome.storage.local.remove('halfFullTaskCache').finally(() => sendResponse({}));
         return true;
+    } else if (message.action === 'getOverrideStatus') {
+        getOverrideStatus(Date.now())
+            .then(status => sendResponse(status))
+            .catch(() => sendResponse(null));
+        return true;
+    } else if (message.action === 'shortFormChanged') {
+        sweepTabsForShortForm().finally(() => sendResponse({}));
+        return true;
     } else if (message.action === 'getMorningBlock') {
         getActiveMorningBlock(Date.now())
             .then(state => sendResponse(state))
@@ -1550,7 +1610,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Survive browser restarts / extension (re)installs: reconcile span state (this is what
 // bounds any downtime while the browser was fully closed — the liveness-tolerance formula in
 // computeUsedSeconds handles it automatically, no special-casing needed here) and alarms.
-chrome.runtime.onInstalled.addListener(async () => {
+chrome.runtime.onInstalled.addListener(async (details) => {
+    await migrateOverrideSettings(details && details.reason).catch(() => {});
     await syncSpanState(Date.now());
     await syncScheduledLimitAlarms();
 });
@@ -1658,6 +1719,93 @@ async function getSessionCaps(now = Date.now()) {
     return { maxMinutes, maxVideos, durationCapMinutes, limits };
 }
 
+// --- Emergency Override ---
+// One setting with two kinds of way out of a cooldown (it replaced the standalone Extend
+// setting in v1.38):
+//   - 'extend':    the old Extend button, "Use for N seconds" (extensionDuration), unlimited,
+//                  only on a duration cooldown.
+//   - 'emergency': a few longer passes a week (emergencyOverridesPerWeek x
+//                  emergencyOverrideMinutes), on any cooldown. Weeks start Monday.
+// Both grant a short duration session (origin 'extend' / 'emergency'). When it ends, the
+// ORIGINAL cooldown resumes instead of a new one starting (see isCooldownBypassOrigin).
+// Storage: overrideEnabled, overrideType, extensionDuration, emergencyOverrideMinutes,
+// emergencyOverridesPerWeek, emergencyOverrideUsage = { weekKey, used }.
+const OVERRIDE_DEFAULTS = {
+    overrideEnabled: false,
+    overrideType: 'emergency',
+    extensionDuration: 30,
+    emergencyOverrideMinutes: 5,
+    emergencyOverridesPerWeek: 2,
+};
+const HARD_MAX_EMERGENCY_MINUTES = 24 * 60;
+const HARD_MAX_EMERGENCY_PER_WEEK = 100;
+
+function isCooldownBypassOrigin(origin) {
+    return origin === 'extend' || origin === 'emergency';
+}
+
+// Date key of the Monday that starts the week containing `ms`.
+function weekStartKey(ms) {
+    const d = new Date(ms);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    return localDateKey(d.getTime());
+}
+
+// Pure: the effective override settings. Before v1.38 there was only extensionDuration
+// (0 = off). If the onInstalled migration hasn't written the new keys yet, a saved legacy value
+// decides; with nothing saved at all it's off (a brand-new install).
+function resolveOverrideSettings(data) {
+    let enabled = data.overrideEnabled;
+    let type = data.overrideType;
+    if (typeof enabled !== 'boolean') {
+        const legacy = data.extensionDuration;
+        enabled = typeof legacy === 'number' && legacy > 0;
+        if (enabled) type = 'extend';
+    }
+    type = type === 'extend' ? 'extend' : 'emergency';
+    const extensionSeconds = Number.isFinite(Number(data.extensionDuration)) && Number(data.extensionDuration) > 0
+        ? Number(data.extensionDuration) : OVERRIDE_DEFAULTS.extensionDuration;
+    return {
+        mode: enabled ? type : 'off',
+        type,
+        extensionSeconds,
+        emergencyMinutes: clampSetting(data.emergencyOverrideMinutes ?? OVERRIDE_DEFAULTS.emergencyOverrideMinutes, HARD_MAX_EMERGENCY_MINUTES),
+        perWeek: clampSetting(data.emergencyOverridesPerWeek ?? OVERRIDE_DEFAULTS.emergencyOverridesPerWeek, HARD_MAX_EMERGENCY_PER_WEEK),
+    };
+}
+
+async function getOverrideStatus(now = Date.now()) {
+    const data = await chrome.storage.local.get([
+        'overrideEnabled', 'overrideType', 'extensionDuration',
+        'emergencyOverrideMinutes', 'emergencyOverridesPerWeek', 'emergencyOverrideUsage',
+    ]);
+    const settings = resolveOverrideSettings(data);
+    const weekKey = weekStartKey(now);
+    const usage = data.emergencyOverrideUsage;
+    const used = usage && usage.weekKey === weekKey ? (Number(usage.used) || 0) : 0;
+    return { ...settings, weekKey, used, remaining: Math.max(0, settings.perWeek - used) };
+}
+
+// Runs from onInstalled. New installs start with no override at all. Existing users (any
+// other reason: update, browser update, reload) keep exactly what they had: their Extend
+// seconds, or off if they'd set Extension Duration to 0. Runs once: skipped when the new
+// keys already exist.
+async function migrateOverrideSettings(reason) {
+    const data = await chrome.storage.local.get(['overrideEnabled', 'extensionDuration']);
+    if (typeof data.overrideEnabled === 'boolean') return;
+    if (reason === 'install') {
+        await chrome.storage.local.set({ overrideEnabled: false, overrideType: 'emergency' });
+        return;
+    }
+    const legacy = typeof data.extensionDuration === 'number' ? data.extensionDuration : 30;
+    await chrome.storage.local.set({
+        overrideEnabled: legacy > 0,
+        overrideType: 'extend',
+        extensionDuration: legacy > 0 ? legacy : 30,
+    });
+}
+
 // --- Morning Blocking ---
 // "After you wake up, no target sites for X minutes." There's no API for "the user just woke
 // up", so the first browsing of the day stands in for it: the first top-level page load (any
@@ -1665,6 +1813,8 @@ async function getSessionCaps(now = Date.now()) {
 // target site is fully blocked (like a full-block scheduled limit: no session can bypass it)
 // until morningBlockMinutes have passed, or until the end time (e.g. 11:00 AM), whichever comes
 // first. First browsing at or after the end time skips morning blocking for that day.
+// Browsing before MORNING_EARLIEST_HOUR (4 AM, not a setting) never counts: that's a late night,
+// not a morning, so staying up past midnight doesn't start the block at 1 AM.
 //
 // Storage:
 //   settings: morningBlockEnabled (bool, default off), morningBlockMinutes,
@@ -1681,6 +1831,7 @@ const MORNING_BLOCK_DEFAULTS = {
     morningBlockEndMinute: 0,
 };
 const HARD_MAX_MORNING_BLOCK_MINUTES = 24 * 60;
+const MORNING_EARLIEST_HOUR = 4;
 
 function localDateKey(ms) {
     const d = new Date(ms);
@@ -1694,12 +1845,19 @@ function morningCutoffTimestamp(settings, ms) {
     return d.getTime();
 }
 
+// Today's 4 AM: the earliest moment that counts as waking up.
+function morningEarliestTimestamp(ms) {
+    const d = new Date(ms);
+    d.setHours(MORNING_EARLIEST_HOUR, 0, 0, 0);
+    return d.getTime();
+}
+
 // Pure: { startTime, endTime } if morning blocking is blocking right now, else null.
 function getMorningBlockState(settings, record, now = Date.now()) {
     if (!settings || !settings.morningBlockEnabled) return null;
     if (!record || record.dateKey !== localDateKey(now) || typeof record.startTime !== 'number') return null;
     const cutoff = morningCutoffTimestamp(settings, now);
-    if (record.startTime >= cutoff) return null;
+    if (record.startTime >= cutoff || record.startTime < morningEarliestTimestamp(now)) return null;
     const minutes = clampSetting(settings.morningBlockMinutes, HARD_MAX_MORNING_BLOCK_MINUTES);
     const endTime = Math.min(record.startTime + minutes * 60 * 1000, cutoff);
     return now < endTime ? { startTime: record.startTime, endTime } : null;
@@ -1715,18 +1873,34 @@ async function getActiveMorningBlock(now = Date.now()) {
 // costs one extra read.
 let morningRecordedDateKey = null;
 let morningActivityInFlight = null;
+// Known "switched off" (most users): skip the storage read on every access check. Cleared on
+// any change to the setting.
+let morningKnownDisabled = false;
+if (chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'local' && ('morningBlockEnabled' in changes || 'morningBlock' in changes)) {
+            morningKnownDisabled = false;
+            if ('morningBlock' in changes) morningRecordedDateKey = null;
+        }
+    });
+}
 
 // Records the first browsing of the day. Returns the block state if THIS call is what started
 // today's morning block (so the caller can sweep tabs that were already open), else null.
 function recordMorningActivity(now = Date.now()) {
     const dateKey = localDateKey(now);
-    if (morningRecordedDateKey === dateKey) return Promise.resolve(null);
+    if (morningRecordedDateKey === dateKey || morningKnownDisabled) return Promise.resolve(null);
+    // Still last night: nothing is recorded, so the first browsing after 4 AM starts the day.
+    if (now < morningEarliestTimestamp(now)) return Promise.resolve(null);
     // Serialize so two simultaneous first navigations can't both "start" the morning, and only
     // the caller that actually started it gets the state back (so open tabs are swept once).
     if (morningActivityInFlight) return morningActivityInFlight.then(() => null, () => null);
     morningActivityInFlight = (async () => {
         const data = await chrome.storage.local.get({ ...MORNING_BLOCK_DEFAULTS, morningBlock: null });
-        if (!data.morningBlockEnabled) return null; // nothing is recorded while it's off
+        if (!data.morningBlockEnabled) { // nothing is recorded while it's off
+            morningKnownDisabled = true;
+            return null;
+        }
         if (data.morningBlock && data.morningBlock.dateKey === dateKey) {
             morningRecordedDateKey = dateKey;
             return null;
@@ -1775,6 +1949,17 @@ async function startSessionInternal(url, type, value, origin, originTabId) {
     if (await getActiveMorningBlock()) {
         if (originTabId != null) await checkAccessSerialized(originTabId, url, domain).catch(() => {});
         return false;
+    }
+
+    // Emergency overrides are a counted weekly allowance, so the background decides the length
+    // and spends the use; whatever the page sent as `value` is ignored.
+    let emergencyUsage = null;
+    if (origin === 'emergency') {
+        const status = await getOverrideStatus();
+        if (status.mode !== 'emergency' || status.remaining <= 0) return false;
+        type = 'duration';
+        value = status.emergencyMinutes;
+        emergencyUsage = { weekKey: status.weekKey, used: status.used + 1 };
     }
 
     // Silently trim oversized requests (see getSessionCaps). Extend/Finish grants are tiny
@@ -1847,7 +2032,11 @@ async function startSessionInternal(url, type, value, origin, originTabId) {
     }
 
     sessions[domain] = session;
-    await chrome.storage.local.set({ activeSessions: sessions });
+    if (emergencyUsage) {
+        await chrome.storage.local.set({ activeSessions: sessions, emergencyOverrideUsage: emergencyUsage });
+    } else {
+        await chrome.storage.local.set({ activeSessions: sessions });
+    }
 
     // Only a genuinely fresh session pick (the initial duration/count picker on the block
     // screen) syncs to other blocked tabs. Extend and Finish Video/Post — both of which can

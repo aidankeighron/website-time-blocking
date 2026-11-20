@@ -74,11 +74,12 @@ const TIPS = [
     { text: 'Tip: Use Duration mode to set a timer, the site blocks when time runs out.' },
     { text: 'Tip: Count mode on YouTube lets you limit yourself to a set number of videos.' },
     { text: 'Tip: Scheduled Limits block sites during specific hours, like a daily focus window.' },
-    { text: 'Tip: The Extend button grants a brief extra window without resetting your cooldown.' },
+    { text: 'Tip: Emergency Override in Settings gives you a few short passes a week, or a quick Extend.' },
     { text: 'Tip: "Finish Video/Post" lets you wrap up what you were watching before locking out.' },
     { text: 'Tip: Input Delay adds a pause before you can confirm, a moment to reconsider.' },
     { text: 'Tip: Add multiple sites to the block list and manage them all from Settings.' },
-    { text: 'Tip: Open Settings to adjust cooldown length, input delay, and extension duration.' },
+    { text: 'Tip: Open Settings to adjust cooldown length and input delay.' },
+    { text: 'Tip: Block YouTube Shorts, Reels and TikTok outright at the bottom of Settings.' },
     { text: 'Tip: Set a Max Session Length in Settings, longer durations get trimmed down to it.' },
     { text: 'Tip: Set Max Videos per Session in Settings to cap how many videos a Count session allows.' },
     { text: 'Tip: During a Scheduled Limit, duration sessions are trimmed to the time you have left.' },
@@ -294,7 +295,52 @@ async function showMorningBlockUI() {
     }
 }
 
+// --- Short-form content block ---
+// An outright block chosen in Settings (no session or override gets past it). Offers a way
+// back to the platform's regular home page, which then goes through the usual checks.
+// A function, not a top-level const: init() runs near the top of this file, before later
+// top-level consts are initialized, and this screen renders synchronously from it.
+function shortFormInfo(kind) {
+    const INFO = {
+        youtubeShorts:  { name: 'YouTube Shorts',  home: 'https://www.youtube.com/',   homeLabel: 'Go to YouTube Home' },
+        instagramReels: { name: 'Instagram Reels', home: 'https://www.instagram.com/', homeLabel: 'Go to Instagram Home' },
+        facebookReels:  { name: 'Facebook Reels',  home: 'https://www.facebook.com/',  homeLabel: 'Go to Facebook Home' },
+        tiktok:         { name: 'TikTok',          home: null },
+    };
+    return INFO[kind] || null;
+}
+
+function showShortFormBlockUI(kind) {
+    const info = shortFormInfo(kind) || { name: 'Short-form content', home: null };
+    document.body.innerHTML = `
+        <div class="container">
+            <h1 class="short-form-block-title">${escapeHtml(info.name)} Blocked</h1>
+            <p id="target-site-display">You are trying to access ${escapeHtml(hostname)}</p>
+            <div class="time-range-block-info">
+                <p><strong>${escapeHtml(info.name)} ${kind === 'tiktok' ? 'is' : 'are'} blocked in Settings.</strong></p>
+                <p class="small-text">Short-form feeds are built to keep you scrolling. This block has no timer and no override.</p>
+            </div>
+            ${info.home ? `<div class="extension-section"><button id="short-form-home-btn">${escapeHtml(info.homeLabel)}</button></div>` : ''}
+            ${CLOSE_TAB_HTML}
+        </div>
+    ` + '<link rel="stylesheet" href="prompt.css">';
+    wireCloseTabButton();
+    const homeBtn = document.getElementById('short-form-home-btn');
+    if (homeBtn) {
+        homeBtn.addEventListener('click', () => {
+            navigating = true;
+            window.location.replace(info.home);
+        });
+    }
+}
+
 async function init() {
+    if (msgVal === 'SHORT_FORM') {
+        showShortFormBlockUI(params.get('kind'));
+        appendTipBar();
+        return;
+    }
+
     if (msgVal === 'MORNING_BLOCK') {
         await showMorningBlockUI();
         appendTipBar();
@@ -310,7 +356,7 @@ async function init() {
         return;
     }
 
-    const data = await _storageGet(['cooldowns', 'inputDelay', 'extensionDuration', 'activeSessions']);
+    const data = await _storageGet(['cooldowns', 'inputDelay', 'activeSessions']);
     // Normalize domain to match storage key
     const domain = intendedUrl ? getDomain(intendedUrl) : (hostname !== 'Unknown' ? getDomain('http://' + hostname) : null);
     
@@ -333,8 +379,7 @@ async function init() {
 
         if (endTime > now) {
             const delay = inputDelayOf(data);
-            const extDuration = data.extensionDuration !== undefined ? data.extensionDuration : 30;
-            renderCooldownUI(endTime, data.cooldowns[domain], delay, extDuration);
+            renderCooldownUI(endTime, data.cooldowns[domain], delay);
             watchStorageForDomain(domain);
             return;
         }
@@ -482,7 +527,16 @@ function followActiveSessionIfGranting(activeSessions, domain) {
 // tell "cooldown changed, re-render" apart from "same cooldown, unrelated storage write."
 let renderedCooldownEndTime = null;
 
-function renderCooldownUI(endTime, cooldownInfo, delay, extDuration) {
+// Emergency Override status from the background (mode, lengths, uses left this week). Fetched
+// fresh on every render: a use spent in another tab must show up here.
+const OVERRIDE_OFF = { mode: 'off' };
+function loadOverrideStatus() {
+    return _sendMessage({ action: 'getOverrideStatus' })
+        .then(st => (st && st.mode) ? st : OVERRIDE_OFF)
+        .catch(() => OVERRIDE_OFF);
+}
+
+async function renderCooldownUI(endTime, cooldownInfo, delay) {
     renderedCooldownEndTime = endTime;
     // Keep the address bar consistent with what background.js's own cooldown redirect would
     // have produced (?cooldown=<minutesLeft>) — this tab is reconciling itself into that same
@@ -495,7 +549,9 @@ function renderCooldownUI(endTime, cooldownInfo, delay, extDuration) {
         u.searchParams.delete('msg');
         window.history.replaceState(null, '', u.toString());
     }
-    showCooldownUI(endTime, cooldownInfo, delay, extDuration);
+    const overrides = await loadOverrideStatus();
+    if (renderedCooldownEndTime !== endTime || navigating) return; // a newer render took over
+    showCooldownUI(endTime, cooldownInfo, delay, overrides);
     appendTipBar();
     showReminder(currentDomain());
 }
@@ -515,19 +571,18 @@ function watchStorageForDomain(domain) {
     });
 }
 
-async function reconcileWithStorage(domain) {
+async function reconcileWithStorage(domain, forceRender = false) {
     if (navigating) return; // already leaving the block screen via some other trigger
-    const data = await _storageGet(['cooldowns', 'activeSessions', 'inputDelay', 'extensionDuration']);
+    const data = await _storageGet(['cooldowns', 'activeSessions', 'inputDelay']);
     const now = Date.now();
 
     if (data.cooldowns && data.cooldowns[domain]) {
         const c = data.cooldowns[domain];
         const endTime = typeof c === 'number' ? c : c.startTime + c.duration;
         if (endTime > now) {
-            if (renderedCooldownEndTime !== endTime) {
+            if (forceRender || renderedCooldownEndTime !== endTime) {
                 const delay = inputDelayOf(data);
-                const extDuration = data.extensionDuration !== undefined ? data.extensionDuration : 30;
-                renderCooldownUI(endTime, c, delay, extDuration);
+                renderCooldownUI(endTime, c, delay);
             }
             return;
         }
@@ -561,36 +616,40 @@ function isSpecificContent(url) {
     return false;
 }
 
-function showCooldownUI(endTime, cooldownInfo, delay = 0, extensionDuration = 30) {
+function showCooldownUI(endTime, cooldownInfo, delay = 0, overrides = OVERRIDE_OFF) {
     const minutesLeft = Math.ceil((endTime - Date.now()) / 60000);
 
-    const canExtend = cooldownInfo.originalType === 'duration' && extensionDuration > 0;
+    // Emergency Override setting: either the classic Extend (seconds, duration cooldowns only)
+    // or a few counted emergency passes a week (any cooldown).
+    const canExtend = overrides.mode === 'extend' && cooldownInfo.originalType === 'duration' && overrides.extensionSeconds > 0;
+    const isEmergency = overrides.mode === 'emergency';
+    const canEmergency = isEmergency && overrides.remaining > 0;
     const canFinish = isSpecificContent(intendedUrl);
 
-    const extendLabel = `Use for ${extensionDuration}s`;
+    const extendLabel = `Use for ${overrides.extensionSeconds}s`;
+    const emergencyLabel = `Emergency Override: ${overrides.emergencyMinutes} min`;
     const finishLabel = 'Finish Video/Post';
 
-    let bypassHtml = '';
+    // [id, label] of every bypass button, in display order.
+    const bypassButtons = [];
+    if (canExtend) bypassButtons.push(['extend-btn', extendLabel]);
+    if (canEmergency) bypassButtons.push(['emergency-btn', emergencyLabel]);
+    if (canFinish) bypassButtons.push(['finish-btn', finishLabel]);
 
-    if (canExtend || canFinish) {
-        bypassHtml += `
+    let emergencyNote = '';
+    if (isEmergency) {
+        emergencyNote = canEmergency
+            ? `<p class="small-text override-note">${overrides.remaining} of ${overrides.perWeek} emergency override${overrides.perWeek === 1 ? '' : 's'} left this week.</p>`
+            : `<p class="small-text override-note">No emergency overrides left this week. They reset on Monday.</p>`;
+    }
+
+    let bypassHtml = '';
+    if (bypassButtons.length > 0 || emergencyNote) {
+        bypassHtml = `
             <div class="extension-section">
-        `;
-        if (canExtend) {
-            bypassHtml += `
-                <button id="extend-btn" disabled>
-                    ${delay > 0 ? `Wait ${delay}...` : extendLabel}
-                </button>
-            `;
-        }
-        if (canFinish) {
-            bypassHtml += `
-                <button id="finish-btn" disabled>
-                    ${delay > 0 ? `Wait ${delay}...` : finishLabel}
-                </button>
-            `;
-        }
-        bypassHtml += `</div>`;
+                ${bypassButtons.map(([id]) => `<button id="${id}" disabled>${delay > 0 ? `Wait ${delay}...` : ''}</button>`).join('')}
+                ${emergencyNote}
+            </div>`;
     }
 
     document.body.innerHTML = `
@@ -605,8 +664,11 @@ function showCooldownUI(endTime, cooldownInfo, delay = 0, extensionDuration = 30
     ` + '<link rel="stylesheet" href="prompt.css">';
     wireCloseTabButton();
 
-    const extendBtn = canExtend ? document.getElementById('extend-btn') : null;
-    const finishBtn = canFinish ? document.getElementById('finish-btn') : null;
+    const buttons = bypassButtons.map(([id, label]) => {
+        const el = document.getElementById(id);
+        if (delay <= 0) el.textContent = label;
+        return [el, label];
+    });
 
     // The countdown text was computed once at render time and never updated, so a cooldown tab
     // left open showed a number that got progressively wrong and never reached 0. Tick it down
@@ -630,27 +692,28 @@ function showCooldownUI(endTime, cooldownInfo, delay = 0, extensionDuration = 30
             timeLeft--;
             if (timeLeft <= 0) {
                 clearInterval(timer);
-                if (extendBtn) {
-                    extendBtn.disabled = false;
-                    extendBtn.textContent = extendLabel;
-                }
-                if (finishBtn) {
-                    finishBtn.disabled = false;
-                    finishBtn.textContent = finishLabel;
-                }
+                buttons.forEach(([el, label]) => { el.disabled = false; el.textContent = label; });
             } else {
-                if (extendBtn) extendBtn.textContent = `Wait ${timeLeft}...`;
-                if (finishBtn) finishBtn.textContent = `Wait ${timeLeft}...`;
+                buttons.forEach(([el]) => { el.textContent = `Wait ${timeLeft}...`; });
             }
         }, 1000);
     } else {
-        if (extendBtn) extendBtn.disabled = false;
-        if (finishBtn) finishBtn.disabled = false;
+        buttons.forEach(([el]) => { el.disabled = false; });
     }
 
+    const extendBtn = document.getElementById('extend-btn');
+    const emergencyBtn = document.getElementById('emergency-btn');
+    const finishBtn = document.getElementById('finish-btn');
     if (extendBtn) {
         extendBtn.addEventListener('click', () => {
-            startSession('duration', extensionDuration / 60, 'extend'); // convert seconds to minutes
+            startSession('duration', overrides.extensionSeconds / 60, 'extend'); // seconds -> minutes
+        });
+    }
+    if (emergencyBtn) {
+        emergencyBtn.addEventListener('click', () => {
+            emergencyBtn.disabled = true;
+            // Length and the weekly count are decided (and spent) by the background.
+            startSession('duration', overrides.emergencyMinutes, 'emergency');
         });
     }
     if (finishBtn) {
@@ -772,7 +835,13 @@ function startSession(type, value, origin) {
         if (response && response.success) {
             navigateToSite();
         } else {
-             document.getElementById('error-msg').textContent = (response && response.error) || "Failed to start session.";
+            const errorEl = document.getElementById('error-msg');
+            if (errorEl) {
+                errorEl.textContent = (response && response.error) || "Failed to start session.";
+            } else if (origin === 'emergency') {
+                // No override left after all (spent in another tab): re-render with fresh status.
+                reconcileWithStorage(currentDomain(), true).catch(() => {});
+            }
         }
     });
 }

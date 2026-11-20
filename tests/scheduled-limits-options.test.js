@@ -403,35 +403,31 @@ test('Clearing a numeric settings field before saving falls back to its default 
     document.getElementById('duration-cooldown').value = '';
     document.getElementById('count-cooldown').value = '';
     document.getElementById('input-delay').value = '';
-    document.getElementById('extension-duration').value = '';
     document.getElementById('save-config').click();
 
     setTimeout(() => {
         expect(store.durationCooldown).toBe(30);
         expect(store.countCooldown).toBe(30);
         expect(store.inputDelay).toBe(5);
-        expect(store.extensionDuration).toBe(30);
         expect(Number.isNaN(store.durationCooldown)).toBe(false);
         done();
     }, 0);
 });
 
-test('Extension Duration 0 (extend disabled) is saved as 0, not replaced by the default', done => {
+test('Input Delay 0 is saved as 0, not replaced by the default', done => {
     const store = {};
     setupChrome(store);
     loadOptionsPage();
     document.dispatchEvent(new Event('DOMContentLoaded'));
 
-    document.getElementById('extension-duration').value = '0';
     document.getElementById('input-delay').value = '0';
     document.getElementById('duration-cooldown').value = '0'; // below min=1 -> raised to 1
     document.getElementById('save-config').click();
 
     setTimeout(() => {
-        expect(store.extensionDuration).toBe(0);
         expect(store.inputDelay).toBe(0);
         expect(store.durationCooldown).toBe(1);
-        expect(document.getElementById('extension-duration').value).toBe('0');
+        expect(store.extensionDuration).toBeUndefined(); // moved to the Emergency Override section
         expect(document.getElementById('duration-cooldown').value).toBe('1');
         done();
     }, 0);

@@ -180,7 +180,9 @@ input[type="number"]:focus {
 }
 
 #extend-btn,
+#emergency-btn,
 #finish-btn,
+#short-form-home-btn,
 #hf-recheck-btn {
     background-color: var(--alt-background-neutral);
     color: var(--foreground);
@@ -196,11 +198,15 @@ input[type="number"]:focus {
 }
 
 #extend-btn:hover,
+#emergency-btn:hover,
 #finish-btn:hover,
+#short-form-home-btn:hover,
 #hf-recheck-btn:hover  { animation: pulsate 0.25s ease both; }
 
 #extend-btn:active,
+#emergency-btn:active,
 #finish-btn:active,
+#short-form-home-btn:active,
 #hf-recheck-btn:active { animation: click-press 0.25s ease both; }
 
 #hf-recheck-btn:disabled {
@@ -216,7 +222,14 @@ input[type="number"]:focus {
     margin-top: var(--space-11);
 }
 
-/* Scheduled limit block screen */
+#extend-btn:disabled,
+#emergency-btn:disabled,
+#finish-btn:disabled { cursor: default; animation: none; }
+
+.override-note { margin: 0 0 var(--space-8); }
+
+/* Scheduled limit / short-form block screens */
+.short-form-block-title,
 .scheduled-limit-block-title {
     color: var(--error);
 }

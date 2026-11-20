@@ -35,11 +35,6 @@
                 <input type="number" id="input-delay" min="0" value="5">
             </div>
             <div class="config-item">
-                <label for="extension-duration">Extension Duration (seconds):</label>
-                <input type="number" id="extension-duration" min="0" value="30">
-            </div>
-            <p class="hint">Time added when using "extend" on cooldown screen. Set to 0 to disable.</p>
-            <div class="config-item">
                 <label for="max-session-minutes">Max Session Length (minutes):</label>
                 <input type="number" id="max-session-minutes" min="1" max="1440" value="1440">
             </div>
@@ -49,6 +44,42 @@
             </div>
             <p class="hint">Longer or bigger sessions are trimmed down to these. Never more than 1440 minutes (24 hours) or 100 videos.</p>
             <button id="save-config">Save Configuration</button>
+        </div>
+
+        <div class="section">
+            <h2 class="section-head">
+                Emergency Override
+                <label class="switch" title="A way out of a cooldown">
+                    <input type="checkbox" id="override-enabled" role="switch" aria-label="Emergency override">
+                    <span class="switch-track"></span>
+                </label>
+            </h2>
+            <p class="hint">A way out of a cooldown for when you really need it.</p>
+            <div id="override-editor" hidden>
+                <div class="seg override-seg" role="radiogroup" aria-label="Override type">
+                    <label class="seg-opt"><input type="radio" name="override-type" id="override-type-emergency" value="emergency" checked>Emergency passes</label>
+                    <label class="seg-opt"><input type="radio" name="override-type" id="override-type-extend" value="extend">Quick extend</label>
+                </div>
+                <div id="override-emergency-fields">
+                    <div class="config-item">
+                        <label for="emergency-per-week">Overrides per week:</label>
+                        <input type="number" id="emergency-per-week" min="1" max="100" value="2">
+                    </div>
+                    <div class="config-item">
+                        <label for="emergency-minutes">Override length (minutes):</label>
+                        <input type="number" id="emergency-minutes" min="1" max="1440" value="5">
+                    </div>
+                    <p class="hint">Use one from any cooldown screen. Your cooldown picks up where it left off afterwards. Resets every Monday.</p>
+                </div>
+                <div id="override-extend-fields" hidden>
+                    <div class="config-item">
+                        <label for="extension-duration">Extend length (seconds):</label>
+                        <input type="number" id="extension-duration" min="1" value="30">
+                    </div>
+                    <p class="hint">A "Use for N seconds" button on duration cooldowns, as often as you like. Your cooldown picks up where it left off afterwards.</p>
+                </div>
+                <button id="save-override">Save Emergency Override</button>
+            </div>
         </div>
 
         <div class="section">
@@ -228,8 +259,30 @@
             </div>
         </div>
 
+        <div class="section">
+            <h2>Block Short-Form Content</h2>
+            <p class="hint">Blocks these outright: no timer, no session, no override. Works whether or not the site is a target site.</p>
+            <div class="toggle-row">
+                <span id="sf-yt-label">YouTube Shorts</span>
+                <label class="switch"><input type="checkbox" class="sf-toggle" data-kind="youtubeShorts" role="switch" aria-labelledby="sf-yt-label"><span class="switch-track"></span></label>
+            </div>
+            <div class="toggle-row">
+                <span id="sf-ig-label">Instagram Reels</span>
+                <label class="switch"><input type="checkbox" class="sf-toggle" data-kind="instagramReels" role="switch" aria-labelledby="sf-ig-label"><span class="switch-track"></span></label>
+            </div>
+            <div class="toggle-row">
+                <span id="sf-fb-label">Facebook Reels</span>
+                <label class="switch"><input type="checkbox" class="sf-toggle" data-kind="facebookReels" role="switch" aria-labelledby="sf-fb-label"><span class="switch-track"></span></label>
+            </div>
+            <div class="toggle-row">
+                <span id="sf-tt-label">TikTok</span>
+                <label class="switch"><input type="checkbox" class="sf-toggle" data-kind="tiktok" role="switch" aria-labelledby="sf-tt-label"><span class="switch-track"></span></label>
+            </div>
+            <p class="hint">Only full-page Shorts and Reels are caught. Ones that play inside a regular feed aren't.</p>
+        </div>
+
         <div id="status"></div>
-        <p class="version">v1.37</p>
+        <p class="version">v1.38</p>
     </div>
     <script src="reminders.js"></script>
     <script src="options.js"></script>

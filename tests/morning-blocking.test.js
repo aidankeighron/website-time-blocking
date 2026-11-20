@@ -173,3 +173,32 @@ test('closeTab without a sender tab reports failure', async () => {
     expect(res).toEqual({ success: false });
     expect(__mockFns__['tabs.remove']).not.toHaveBeenCalled();
 });
+
+test('browsing before 4 AM is a late night, not a morning: nothing starts until after 4', async () => {
+    enable();
+    setClock(at(1, 30));
+    expect(isNormalPrompt(await visit(YT))).toBe(true);
+    setClock(at(3, 59));
+    expect(isNormalPrompt(await visit(YT))).toBe(true);
+    expect(__store__.morningBlock).toBeUndefined();
+
+    setClock(at(4, 10));
+    expect(isMorningBlock(await visit(YT))).toBe(true);
+    expect(__store__.morningBlock.startTime).toBe(at(4, 10));
+    setClock(at(4, 40));
+    expect(isNormalPrompt(await visit(YT))).toBe(true);
+});
+
+test('a startup before 4 AM does not count either', async () => {
+    enable();
+    setClock(at(2, 0));
+    await fireStartup();
+    expect(__store__.morningBlock).toBeUndefined();
+});
+
+test('switching it on after browsing while it was off still starts the block (no stale "off" cache)', async () => {
+    expect(isNormalPrompt(await visit(YT))).toBe(true); // off: remembered as off
+    await chrome.storage.local.set({ morningBlockEnabled: true, morningBlockMinutes: 30, morningBlockEndHour: 11, morningBlockEndMinute: 0 });
+    setClock(at(8, 5));
+    expect(isMorningBlock(await visit(YT))).toBe(true);
+});

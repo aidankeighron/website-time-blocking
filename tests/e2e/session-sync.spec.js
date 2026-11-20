@@ -96,6 +96,8 @@ test('Extend during cooldown stays exclusive: does not unlock another tab blocke
         cooldowns: {
             'youtube.com': { startTime: now - 2 * 60 * 1000, duration: 30 * 60 * 1000, originalType: 'duration' },
         },
+        overrideEnabled: true, // Extend is opt-in since v1.38 (Emergency Override setting)
+        overrideType: 'extend',
     });
 
     await expectBlocked(page, VIDEO_A);
