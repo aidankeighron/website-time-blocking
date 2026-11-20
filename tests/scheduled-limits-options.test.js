@@ -409,7 +409,7 @@ test('Clearing a numeric settings field before saving falls back to its default 
     setTimeout(() => {
         expect(store.durationCooldown).toBe(30);
         expect(store.countCooldown).toBe(30);
-        expect(store.inputDelay).toBe(0);
+        expect(store.inputDelay).toBe(5);
         expect(store.extensionDuration).toBe(30);
         expect(Number.isNaN(store.durationCooldown)).toBe(false);
         done();

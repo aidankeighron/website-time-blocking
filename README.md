@@ -11,6 +11,8 @@ A browser extension designed to bring intentionality to your browsing habits. In
 - **Enforced Breaks**: Once a session ends, a cooldown period prevents immediate re-entry, helping break the loop of compulsive checking.
 - **Reminders**: Write your own reminders in Settings. The intervention screen shows a different one each visit, with tags like `{site}`, `{visits}`, `{time}` and `{day}` filled in live. Off by default.
 - **Scheduled Limits**: Cap or fully block all target sites on chosen days and times.
+- **Morning Blocking**: After your first browsing of the day, all target sites stay blocked for a set number of minutes (default 30), or until a set time (default 11:00 AM), whichever comes first. Off by default.
+- **Close Tab**: Every block screen has a quiet Close Tab button, usable even while the input delay counts down.
 - **Customizable**: Manage your own list of target sites and configure cooldown durations via the settings page.
 
 ## Installation

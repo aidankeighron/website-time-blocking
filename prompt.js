@@ -36,6 +36,14 @@ function _storageSet(data) {
     });
 }
 
+// Input Delay setting, in seconds. Never-saved means the default (5s); a saved 0 stays 0.
+const DEFAULT_INPUT_DELAY = 5;
+function inputDelayOf(data) {
+    const raw = data ? data.inputDelay : undefined;
+    const n = Number(raw);
+    return raw != null && Number.isFinite(n) && n >= 0 ? n : DEFAULT_INPUT_DELAY;
+}
+
 const intendedUrl = params.get('url');
 const cooldownVal = params.get('cooldown');
 const msgVal = params.get('msg');
@@ -74,6 +82,8 @@ const TIPS = [
     { text: 'Tip: Set a Max Session Length in Settings, longer durations get trimmed down to it.' },
     { text: 'Tip: Set Max Videos per Session in Settings to cap how many videos a Count session allows.' },
     { text: 'Tip: During a Scheduled Limit, duration sessions are trimmed to the time you have left.' },
+    { text: 'Tip: Morning Blocking keeps target sites closed for a while after you first browse each morning.' },
+    { text: 'Tip: Changed your mind? Close Tab is always there, even while the input delay counts down.' },
     { text: 'Connect Half Full to make limits conditional on your task list.', hf: true },
     { text: 'Half Full is a task manager, when tasks are done, your limits can lift automatically.', hf: true },
     { text: 'Earn your screen time: link Half Full so limits lift once your tasks are checked off.', hf: true },
@@ -117,6 +127,25 @@ function navigateToSite() {
     if (navigating) return;
     navigating = true;
     window.location.replace(intendedUrl);
+}
+
+// --- Close Tab ---
+// A quiet way out on every block screen: never held back by the input delay. The background
+// closes the tab (extension pages can't reliably window.close() a tab they didn't open);
+// window.close() is only a fallback.
+const CLOSE_TAB_HTML = '<button id="close-tab-btn" type="button">Close Tab</button>';
+
+function wireCloseTabButton() {
+    const btn = document.getElementById('close-tab-btn');
+    if (!btn) return;
+    btn.onclick = async () => {
+        btn.disabled = true;
+        const r = await _sendMessage({ action: 'closeTab' }).catch(() => null);
+        if (!r || !r.success) {
+            window.close();
+            btn.disabled = false;
+        }
+    };
 }
 
 // Main Logic: Check status immediately
@@ -188,8 +217,10 @@ async function showScheduledLimitBlockUI(limitId) {
             <h1 class="scheduled-limit-block-title">Access Blocked (Scheduled Limit)</h1>
             <p id="target-site-display">You are trying to access ${escapeHtml(hostname)}</p>
             ${detailHtml}
+            ${CLOSE_TAB_HTML}
         </div>
     ` + '<link rel="stylesheet" href="prompt.css">';
+    wireCloseTabButton();
 
     if (hfPattern) {
         const recheckBtn = document.getElementById('hf-recheck-btn');
@@ -202,7 +233,74 @@ async function showScheduledLimitBlockUI(limitId) {
     }
 }
 
+// --- Morning Blocking ---
+// Full block for the first minutes after the day's first browsing (see background.js). The end
+// time comes from the background so it always reflects the current settings.
+async function showMorningBlockUI() {
+    const state = await _sendMessage({ action: 'getMorningBlock' }).catch(() => null);
+    if (!state || !(state.endTime > Date.now())) {
+        // Already over (or switched off): let the real access check decide.
+        navigateToSite();
+        return;
+    }
+    let endTime = state.endTime;
+    const minutesLeft = () => Math.max(1, Math.ceil((endTime - Date.now()) / 60000));
+    const untilText = () => {
+        const d = new Date(endTime);
+        return formatTimeLocal(d.getHours(), d.getMinutes());
+    };
+
+    document.body.innerHTML = `
+        <div class="container">
+            <h1 class="morning-block-title">Morning Block Active</h1>
+            <p id="target-site-display">You are trying to access ${escapeHtml(hostname)}</p>
+            <div class="time-range-block-info">
+                <p><strong>Unlocks in <span id="mb-timer">${minutesLeft()}</span> min</strong>, at <span id="mb-until">${untilText()}</span>.</p>
+                <p class="small-text">Give your morning a head start. All target sites are blocked until then, no session can bypass it.</p>
+            </div>
+            <div id="reminder" class="reminder" hidden></div>
+            ${CLOSE_TAB_HTML}
+        </div>
+    ` + '<link rel="stylesheet" href="prompt.css">';
+    wireCloseTabButton();
+    showReminder(currentDomain());
+
+    const timerEl = document.getElementById('mb-timer');
+    const untilEl = document.getElementById('mb-until');
+    const interval = setInterval(() => {
+        if (endTime - Date.now() <= 0) {
+            clearInterval(interval);
+            navigateToSite();
+            return;
+        }
+        timerEl.textContent = minutesLeft();
+    }, 1000);
+
+    // Settings changed (switched off, fewer minutes, earlier end time): re-ask the background.
+    if (_isExtPage && chrome.storage && chrome.storage.onChanged) {
+        chrome.storage.onChanged.addListener(async (changes, namespace) => {
+            if (namespace !== 'local' || navigating) return;
+            if (!Object.keys(changes).some(k => k.startsWith('morningBlock'))) return;
+            const fresh = await _sendMessage({ action: 'getMorningBlock' }).catch(() => null);
+            if (!fresh || !(fresh.endTime > Date.now())) {
+                clearInterval(interval);
+                navigateToSite();
+                return;
+            }
+            endTime = fresh.endTime;
+            timerEl.textContent = minutesLeft();
+            untilEl.textContent = untilText();
+        });
+    }
+}
+
 async function init() {
+    if (msgVal === 'MORNING_BLOCK') {
+        await showMorningBlockUI();
+        appendTipBar();
+        return;
+    }
+
     // Handle scheduled limits before any other UI (highest priority — a full block or an
     // exhausted usage cap overrides even an active session).
     if (msgVal === 'SCHEDULED_LIMIT') {
@@ -234,7 +332,7 @@ async function init() {
         }
 
         if (endTime > now) {
-            const delay = data.inputDelay || 0;
+            const delay = inputDelayOf(data);
             const extDuration = data.extensionDuration !== undefined ? data.extensionDuration : 30;
             renderCooldownUI(endTime, data.cooldowns[domain], delay, extDuration);
             watchStorageForDomain(domain);
@@ -251,7 +349,7 @@ async function init() {
         document.getElementById('error-msg').textContent = decodeURIComponent(msgVal);
     }
 
-    const delay = data.inputDelay || 0;
+    const delay = inputDelayOf(data);
 
     // Check if we already have an active session for this domain.
     // If we do, redirect immediately (handles 'back' button and any spurious re-redirects).
@@ -427,7 +525,7 @@ async function reconcileWithStorage(domain) {
         const endTime = typeof c === 'number' ? c : c.startTime + c.duration;
         if (endTime > now) {
             if (renderedCooldownEndTime !== endTime) {
-                const delay = data.inputDelay || 0;
+                const delay = inputDelayOf(data);
                 const extDuration = data.extensionDuration !== undefined ? data.extensionDuration : 30;
                 renderCooldownUI(endTime, c, delay, extDuration);
             }
@@ -502,8 +600,10 @@ function showCooldownUI(endTime, cooldownInfo, delay = 0, extensionDuration = 30
             <p class="small-text">Go do something else!</p>
             <div id="reminder" class="reminder" hidden></div>
             ${bypassHtml}
+            ${CLOSE_TAB_HTML}
         </div>
     ` + '<link rel="stylesheet" href="prompt.css">';
+    wireCloseTabButton();
 
     const extendBtn = canExtend ? document.getElementById('extend-btn') : null;
     const finishBtn = canFinish ? document.getElementById('finish-btn') : null;
@@ -585,6 +685,7 @@ function setupNormalUI(delay = 0) {
     
     const confirmBtn = document.getElementById('confirm-btn');
     confirmBtn.addEventListener('click', handleConfirm);
+    wireCloseTabButton();
     
     if (delay > 0) {
         const inputs = document.querySelectorAll('input, button.type-btn');

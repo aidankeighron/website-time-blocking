@@ -126,6 +126,29 @@ input[type="number"]:focus {
 #confirm-btn:hover  { animation: pulsate 0.25s ease both; }
 #confirm-btn:active { animation: click-press 0.25s ease both; }
 
+/* Close Tab: a quiet, gray way out, under the main action on every block screen */
+#close-tab-btn {
+    background-color: var(--alt-background-neutral);
+    color: var(--alt-foreground-neutral);
+    border: none;
+    padding: var(--space-6) var(--space-12);
+    border-radius: var(--radius-pill);
+    font-family: var(--font-family);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+    width: 100%;
+    margin-top: var(--space-6);
+}
+
+.extension-section + #close-tab-btn { margin-top: 0; } /* bypass buttons already leave a gap */
+
+.time-range-block-info + #close-tab-btn,
+.reminder + #close-tab-btn { margin-top: var(--space-10); }
+
+#close-tab-btn:hover    { color: var(--foreground); animation: pulsate 0.25s ease both; }
+#close-tab-btn:active   { animation: click-press 0.25s ease both; }
+#close-tab-btn:disabled { opacity: 0.6; cursor: default; animation: none; }
+
 .warning {
     color: var(--error);
     font-size: var(--font-size-sm);

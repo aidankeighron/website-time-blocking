@@ -582,7 +582,8 @@ select:focus {
 .switch input:checked + .switch-track::after { transform: translateX(18px); background-color: var(--foreground); }
 .switch input:focus-visible + .switch-track { outline: var(--border-accent); outline-offset: 2px; }
 
-#reminders-editor[hidden] { display: none; }
+#reminders-editor[hidden],
+#morning-editor[hidden] { display: none; }
 
 #reminders-text {
     width: 100%;

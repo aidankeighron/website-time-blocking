@@ -125,7 +125,7 @@ function restoreOptions() {
         targetSites: ['instagram.com', 'reddit.com', 'youtube.com'],
         durationCooldown: 30,
         countCooldown: 30,
-        inputDelay: 0,
+        inputDelay: 5,
         extensionDuration: 30,
         maxSessionMinutes: MAX_SESSION_MINUTES,
         maxSessionVideos: MAX_SESSION_VIDEOS,
@@ -143,6 +143,7 @@ function restoreOptions() {
         renderScheduledLimitList(items.scheduledLimits);
     });
     restoreReminders();
+    restoreMorningBlocking();
 }
 
 function createSiteElement(site) {
@@ -191,7 +192,7 @@ function saveOptions() {
     // and re-enters a number.
     const durationCooldown = readIntSetting('duration-cooldown', 30, 1);
     const countCooldown = readIntSetting('count-cooldown', 30, 1);
-    const inputDelay = readIntSetting('input-delay', 0, 0);
+    const inputDelay = readIntSetting('input-delay', 5, 0);
     const extensionDuration = readIntSetting('extension-duration', 30, 0);
     // Show what was actually saved, so a corrected value is never a silent surprise.
     document.getElementById('duration-cooldown').value = durationCooldown;
@@ -642,3 +643,67 @@ document.querySelectorAll('.tag-chip').forEach(btn => {
     btn.addEventListener('mousedown', e => e.preventDefault());
     btn.addEventListener('click', () => insertReminderTag(btn.dataset.tag));
 });
+
+// --- Morning Blocking ---
+// morningBlockEnabled saves as soon as the switch flips; minutes and end time are saved with
+// the Save button. Defaults mirror background.js's MORNING_BLOCK_DEFAULTS.
+const MORNING_DEFAULT_MINUTES = 30;
+const MORNING_MAX_MINUTES = 24 * 60;
+const MORNING_DEFAULT_END = { hour: 11, minute: 0 };
+
+function localDateKey(ms) {
+    const d = new Date(ms);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function restoreMorningBlocking() {
+    chrome.storage.local.get({
+        morningBlockEnabled: false,
+        morningBlockMinutes: MORNING_DEFAULT_MINUTES,
+        morningBlockEndHour: MORNING_DEFAULT_END.hour,
+        morningBlockEndMinute: MORNING_DEFAULT_END.minute,
+    }, (items) => {
+        document.getElementById('morning-enabled').checked = !!items.morningBlockEnabled;
+        document.getElementById('morning-editor').hidden = !items.morningBlockEnabled;
+        document.getElementById('morning-minutes').value = items.morningBlockMinutes;
+        document.getElementById('morning-end').value =
+            `${String(items.morningBlockEndHour).padStart(2, '0')}:${String(items.morningBlockEndMinute).padStart(2, '0')}`;
+    });
+}
+
+function onMorningToggle() {
+    const enabled = document.getElementById('morning-enabled').checked;
+    document.getElementById('morning-editor').hidden = !enabled;
+    chrome.storage.local.get({ morningBlock: null }, (data) => {
+        const update = { morningBlockEnabled: enabled };
+        // Turning it on counts today as already started, so it kicks in with tomorrow's first
+        // browsing instead of blocking everything the moment the switch flips.
+        const today = localDateKey(Date.now());
+        if (enabled && !(data.morningBlock && data.morningBlock.dateKey === today)) {
+            update.morningBlock = { dateKey: today, startTime: null };
+        }
+        chrome.storage.local.set(update, () => {
+            showStatus(enabled ? 'Morning blocking on, starting tomorrow morning.' : 'Morning blocking off.');
+        });
+    });
+}
+
+function saveMorningBlocking() {
+    const minutes = Math.min(readIntSetting('morning-minutes', MORNING_DEFAULT_MINUTES, 1), MORNING_MAX_MINUTES);
+    document.getElementById('morning-minutes').value = minutes;
+    const endInput = document.getElementById('morning-end');
+    let [endHour, endMinute] = (endInput.value || '').split(':').map(Number);
+    if (!Number.isInteger(endHour) || !Number.isInteger(endMinute)) {
+        endHour = MORNING_DEFAULT_END.hour;
+        endMinute = MORNING_DEFAULT_END.minute;
+    }
+    endInput.value = `${String(endHour).padStart(2, '0')}:${String(endMinute).padStart(2, '0')}`;
+    chrome.storage.local.set({
+        morningBlockMinutes: minutes,
+        morningBlockEndHour: endHour,
+        morningBlockEndMinute: endMinute,
+    }, () => showStatus('Morning blocking saved.'));
+}
+
+document.getElementById('morning-enabled').addEventListener('change', onMorningToggle);
+document.getElementById('save-morning').addEventListener('click', saveMorningBlocking);

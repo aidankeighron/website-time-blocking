@@ -32,7 +32,7 @@
             </div>
             <div class="config-item">
                 <label for="input-delay">Input Delay (seconds):</label>
-                <input type="number" id="input-delay" min="0" value="0">
+                <input type="number" id="input-delay" min="0" value="5">
             </div>
             <div class="config-item">
                 <label for="extension-duration">Extension Duration (seconds):</label>
@@ -81,6 +81,29 @@
             <p class="hint">Cap or fully block usage of all target sites on specific days, during a specific time window. No session can bypass this once the limit is hit.</p>
             <ul id="scheduled-limit-list"></ul>
             <button id="add-scheduled-limit-btn">+ Add Scheduled Limit</button>
+        </div>
+
+        <div class="section">
+            <h2 class="section-head">
+                Morning Blocking
+                <label class="switch" title="Block target sites for a while after you wake up">
+                    <input type="checkbox" id="morning-enabled" role="switch" aria-label="Morning blocking">
+                    <span class="switch-track"></span>
+                </label>
+            </h2>
+            <p class="hint">After your first browsing of the day, all target sites stay blocked for a while. No session can bypass it.</p>
+            <div id="morning-editor" hidden>
+                <div class="config-item">
+                    <label for="morning-minutes">Wait after waking up (minutes):</label>
+                    <input type="number" id="morning-minutes" min="1" max="1440" value="30">
+                </div>
+                <div class="config-item">
+                    <label for="morning-end">Morning ends at:</label>
+                    <input type="time" id="morning-end" value="11:00">
+                </div>
+                <p class="hint">The block lifts once the wait is over, or at this time, whichever comes first. Browsing for the first time after it skips the block for that day.</p>
+                <button id="save-morning">Save Morning Blocking</button>
+            </div>
         </div>
 
         <div id="scheduled-limit-modal" class="modal-overlay" style="display:none;">
@@ -206,7 +229,7 @@
         </div>
 
         <div id="status"></div>
-        <p class="version">v1.36</p>
+        <p class="version">v1.37</p>
     </div>
     <script src="reminders.js"></script>
     <script src="options.js"></script>

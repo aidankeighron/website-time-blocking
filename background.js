@@ -887,6 +887,9 @@ async function handleWebNavigationEvent({ tabId, url, frameId }) {
     if (frameId !== 0) return;
     if (!url) return;
     if (url.startsWith('chrome-extension://') || url.startsWith('moz-extension://')) return;
+    // Any ordinary page load (target site or not) counts as the day's browsing activity for
+    // morning blocking — e.g. checking email first thing still starts the morning clock.
+    if (/^https?:/.test(url)) noteBrowsingActivity(tabId).catch(() => {});
     if (pendingPromptTabs.has(tabId)) {
         // onCommitted/onHistoryStateUpdated only fire once a navigation has resolved to its
         // final URL (no intermediate 'loading' hops to filter, unlike onUpdated above), so any
@@ -970,6 +973,11 @@ async function checkAccessSerialized(tabId, url, domain) {
 
     const now = Date.now();
 
+    // Any visit counts as browsing activity for morning blocking. If this visit is the day's
+    // first, other target-site tabs left open overnight get swept to the block screen too; this
+    // tab itself is handled by the morning check below.
+    if (await recordMorningActivity(now)) await sweepTabsForMorningBlock(tabId);
+
     // 0. Check scheduled limits (highest priority — a full block or an exhausted usage cap
     // overrides even an active session; no session can bypass it).
     if (scheduledLimits.length > 0) {
@@ -983,6 +991,13 @@ async function checkAccessSerialized(tabId, url, domain) {
             await redirectToPrompt(tabId, promptUrl);
             return true;
         }
+    }
+
+    // 0b. Morning blocking: same strength as a full-block scheduled limit (overrides any
+    // session) for the first minutes after the day's first browsing.
+    if (await getActiveMorningBlock(now)) {
+        await redirectToPrompt(tabId, morningBlockPromptUrl(url));
+        return true;
     }
 
     // 1. Check Active Session (Priority over Cooldown for Unlimited)
@@ -1511,6 +1526,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // old cached result.
         chrome.storage.local.remove('halfFullTaskCache').finally(() => sendResponse({}));
         return true;
+    } else if (message.action === 'getMorningBlock') {
+        getActiveMorningBlock(Date.now())
+            .then(state => sendResponse(state))
+            .catch(() => sendResponse(null));
+        return true;
+    } else if (message.action === 'closeTab') {
+        // "Close Tab" button on the block screen. Extension pages can't reliably window.close()
+        // a tab they didn't open, so the background closes the sender's tab instead.
+        if (!sender.tab || sender.tab.id == null) { sendResponse({ success: false }); return; }
+        Promise.resolve(chrome.tabs.remove(sender.tab.id))
+            .then(() => sendResponse({ success: true }))
+            .catch(() => sendResponse({ success: false }));
+        return true;
     } else if (message.action === 'ensureHalfFullToken') {
         // options.js defers to this instead of doing its own independent token refresh, so
         // there's a single source of truth for halfFullAuth writes — see hfGetValidToken.
@@ -1530,6 +1558,9 @@ chrome.runtime.onInstalled.addListener(async () => {
 chrome.runtime.onStartup.addListener(async () => {
     await syncSpanState(Date.now());
     await syncScheduledLimitAlarms();
+    // Opening the browser is browsing activity too (morning blocking), even before any page
+    // loads; restored target-site tabs get swept to the morning block screen.
+    await noteBrowsingActivity(null).catch(() => {});
 });
 
 // Finds every OTHER tab currently sitting on prompt.html for `domain` (skipping `excludeTabId`,
@@ -1627,9 +1658,124 @@ async function getSessionCaps(now = Date.now()) {
     return { maxMinutes, maxVideos, durationCapMinutes, limits };
 }
 
+// --- Morning Blocking ---
+// "After you wake up, no target sites for X minutes." There's no API for "the user just woke
+// up", so the first browsing of the day stands in for it: the first top-level page load (any
+// site, not just target sites) or browser startup on a new calendar day. From that moment every
+// target site is fully blocked (like a full-block scheduled limit: no session can bypass it)
+// until morningBlockMinutes have passed, or until the end time (e.g. 11:00 AM), whichever comes
+// first. First browsing at or after the end time skips morning blocking for that day.
+//
+// Storage:
+//   settings: morningBlockEnabled (bool, default off), morningBlockMinutes,
+//             morningBlockEndHour, morningBlockEndMinute
+//   state:    morningBlock = { dateKey, startTime }. startTime is the day's first browsing
+//             moment, or null for "today already counted, nothing to block" (written by the
+//             settings switch so turning it on doesn't instantly block the rest of today).
+// Only the start moment is stored; the end is computed from the CURRENT settings each time, so
+// a settings change applies straight away.
+const MORNING_BLOCK_DEFAULTS = {
+    morningBlockEnabled: false,
+    morningBlockMinutes: 30,
+    morningBlockEndHour: 11,
+    morningBlockEndMinute: 0,
+};
+const HARD_MAX_MORNING_BLOCK_MINUTES = 24 * 60;
+
+function localDateKey(ms) {
+    const d = new Date(ms);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Today's end-of-morning cutoff as a timestamp (same calendar day as `ms`).
+function morningCutoffTimestamp(settings, ms) {
+    const d = new Date(ms);
+    d.setHours(Number(settings.morningBlockEndHour) || 0, Number(settings.morningBlockEndMinute) || 0, 0, 0);
+    return d.getTime();
+}
+
+// Pure: { startTime, endTime } if morning blocking is blocking right now, else null.
+function getMorningBlockState(settings, record, now = Date.now()) {
+    if (!settings || !settings.morningBlockEnabled) return null;
+    if (!record || record.dateKey !== localDateKey(now) || typeof record.startTime !== 'number') return null;
+    const cutoff = morningCutoffTimestamp(settings, now);
+    if (record.startTime >= cutoff) return null;
+    const minutes = clampSetting(settings.morningBlockMinutes, HARD_MAX_MORNING_BLOCK_MINUTES);
+    const endTime = Math.min(record.startTime + minutes * 60 * 1000, cutoff);
+    return now < endTime ? { startTime: record.startTime, endTime } : null;
+}
+
+async function getActiveMorningBlock(now = Date.now()) {
+    const data = await chrome.storage.local.get({ ...MORNING_BLOCK_DEFAULTS, morningBlock: null });
+    return getMorningBlockState(data, data.morningBlock, now);
+}
+
+// Day already recorded (in memory), so the common case (every navigation after the first one
+// of the day) skips the storage read entirely. Lost when the service worker sleeps, which only
+// costs one extra read.
+let morningRecordedDateKey = null;
+let morningActivityInFlight = null;
+
+// Records the first browsing of the day. Returns the block state if THIS call is what started
+// today's morning block (so the caller can sweep tabs that were already open), else null.
+function recordMorningActivity(now = Date.now()) {
+    const dateKey = localDateKey(now);
+    if (morningRecordedDateKey === dateKey) return Promise.resolve(null);
+    // Serialize so two simultaneous first navigations can't both "start" the morning, and only
+    // the caller that actually started it gets the state back (so open tabs are swept once).
+    if (morningActivityInFlight) return morningActivityInFlight.then(() => null, () => null);
+    morningActivityInFlight = (async () => {
+        const data = await chrome.storage.local.get({ ...MORNING_BLOCK_DEFAULTS, morningBlock: null });
+        if (!data.morningBlockEnabled) return null; // nothing is recorded while it's off
+        if (data.morningBlock && data.morningBlock.dateKey === dateKey) {
+            morningRecordedDateKey = dateKey;
+            return null;
+        }
+        const record = { dateKey, startTime: now };
+        await chrome.storage.local.set({ morningBlock: record });
+        morningRecordedDateKey = dateKey;
+        return getMorningBlockState(data, record, now);
+    })().finally(() => { morningActivityInFlight = null; });
+    return morningActivityInFlight;
+}
+
+function morningBlockPromptUrl(url) {
+    return chrome.runtime.getURL(`prompt.html?url=${encodeURIComponent(url)}&msg=MORNING_BLOCK`);
+}
+
+// Sends every open target-site tab (except excludeTabId) to the morning block screen. Used when
+// the morning block starts from a non-target navigation or a browser restart, so a target site
+// left open overnight doesn't stay usable.
+async function sweepTabsForMorningBlock(excludeTabId = null) {
+    const data = await chrome.storage.local.get({ targetSites: DEFAULT_TARGETS });
+    let tabs;
+    try { tabs = await chrome.tabs.query({}); } catch { return; }
+    await Promise.all(tabs.map(async tab => {
+        if (tab.id === excludeTabId) return;
+        try {
+            const tabDomain = getDomain(tab.url);
+            if (tabDomain && data.targetSites.includes(tabDomain)) {
+                await redirectToPrompt(tab.id, morningBlockPromptUrl(tab.url));
+            }
+        } catch (e) {}
+    }));
+}
+
+async function noteBrowsingActivity(excludeTabId = null, now = Date.now()) {
+    const started = await recordMorningActivity(now);
+    if (started) await sweepTabsForMorningBlock(excludeTabId);
+}
+
 async function startSessionInternal(url, type, value, origin, originTabId) {
     const domain = getDomain(url);
     if (!domain) return false;
+
+    // No session of any kind can start during morning blocking. A tab can only get here from a
+    // block screen rendered before the morning block began; send it to the morning screen.
+    if (await getActiveMorningBlock()) {
+        if (originTabId != null) await checkAccessSerialized(originTabId, url, domain).catch(() => {});
+        return false;
+    }
 
     // Silently trim oversized requests (see getSessionCaps). Extend/Finish grants are tiny
     // one-off windows from the cooldown screen and only get the hard ceilings.

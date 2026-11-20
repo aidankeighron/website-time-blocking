@@ -66,6 +66,10 @@ const HELPER_URL = 'https://playwright-ext-helper.invalid/';
 // Playwright routes this URL to serve the actual extension prompt files.
 const TEST_PROMPT_BASE = 'https://playwright-ext-prompt.invalid/';
 
+// Settings every cleared test starts from. The real default Input Delay is 5s; the E2E flows
+// were written against an instant picker, so they opt out unless a test sets its own delay.
+const E2E_BASELINE = { inputDelay: 0 };
+
 // Route all three target domains + the helper URL to local HTML (no network needed).
 async function routeTargetSites(context) {
     const isTarget = (url) => {
@@ -300,7 +304,7 @@ const test = base.extend({
                     // to the routable test URL (not moz-extension://) throughout the test run.
                     clear: async () => {
                         await callBridge('clear', null);
-                        await callBridge('set', { __testPromptBase: TEST_PROMPT_BASE });
+                        await callBridge('set', { __testPromptBase: TEST_PROMPT_BASE, ...E2E_BASELINE });
                     },
                 });
 
@@ -312,10 +316,10 @@ const test = base.extend({
                 await use({
                     set: (data) => hp.evaluate((d) => chrome.storage.local.set(d), data),
                     get: (keys) => hp.evaluate((k) => chrome.storage.local.get(k), keys),
-                    clear: () => hp.evaluate(() => Promise.all([
+                    clear: () => hp.evaluate((baseline) => Promise.all([
                         chrome.storage.local.clear(),
                         chrome.alarms.clearAll(),
-                    ])),
+                    ]).then(() => chrome.storage.local.set(baseline)), E2E_BASELINE),
                 });
 
                 await hp.close().catch(() => {});

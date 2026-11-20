@@ -54,6 +54,7 @@ global.__resetChrome__ = function () {
     // Default: empty URL, matching the real API's momentary state during a tab-ID swap — tests
     // covering the onReplaced retry path override this per-call via mockResolvedValueOnce.
     mockFns['tabs.get'].mockResolvedValue({ url: '' });
+    mockFns['tabs.remove'].mockResolvedValue(undefined);
     mockFns['alarms.create'].mockResolvedValue(undefined);
     mockFns['alarms.clear'].mockResolvedValue(true);
     mockFns['alarms.getAll'].mockResolvedValue([]);
@@ -63,6 +64,7 @@ global.__resetChrome__ = function () {
 makeMockFn('tabs.update');
 makeMockFn('tabs.query');
 makeMockFn('tabs.get');
+makeMockFn('tabs.remove');
 makeMockFn('alarms.create');
 makeMockFn('alarms.clear');
 makeMockFn('alarms.getAll');
@@ -130,6 +132,7 @@ global.chrome = {
         update: (...args) => mockFns['tabs.update'](...args),
         query: (...args) => mockFns['tabs.query'](...args),
         get: (...args) => mockFns['tabs.get'](...args),
+        remove: (...args) => mockFns['tabs.remove'](...args),
     },
     alarms: {
         onAlarm: { addListener: (fn) => listeners.onAlarm.push(fn) },
